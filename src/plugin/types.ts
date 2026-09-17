@@ -129,3 +129,36 @@ export interface SdkPreparedRequest {
 }
 
 export type AccountSelectionStrategy = 'sticky' | 'round-robin' | 'lowest-usage'
+
+/** V1-compat auth-method shapes (previously imported from the V1 plugin host package). */
+export interface KiroAuthPrompt {
+  type: 'text'
+  key: string
+  message: string
+  placeholder?: string
+  validate?: (value: string) => string | undefined
+}
+export interface KiroAuthorizeCredentialPayload {
+  refresh: string
+  access: string
+  expires: number
+  metadata?: Record<string, unknown>
+}
+export interface KiroAuthorizeCallbackResult {
+  type: 'success' | 'failed'
+  key?: string
+  credential?: KiroAuthorizeCredentialPayload
+}
+export interface KiroAuthResult {
+  url: string
+  instructions: string
+  method: string
+  callback: () => Promise<KiroAuthorizeCallbackResult>
+}
+// Named `...Spec`: `KiroAuthMethod` above is the existing domain auth-method kind union.
+export interface KiroAuthMethodSpec {
+  label: string
+  type: 'oauth'
+  prompts: KiroAuthPrompt[]
+  authorize: (inputs?: Record<string, string>) => Promise<KiroAuthResult>
+}

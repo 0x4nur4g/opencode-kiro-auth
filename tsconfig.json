@@ -10,6 +10,8 @@
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": true,
     "outDir": "dist",
-    "declaration": true
+    "declaration": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true
   }
 }

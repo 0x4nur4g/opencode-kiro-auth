@@ -35,7 +35,7 @@ export class RequestHandler {
     private accountManager: AccountManager,
     private config: KiroConfig,
     private repository: AccountRepository,
-    private client?: any
+    private reauth?: () => Promise<boolean>
   ) {
     this.accountSelector = new AccountSelector(accountManager, config, syncFromKiroCli, repository)
     this.tokenRefresher = new TokenRefresher(config, accountManager, syncFromKiroCli, repository)
@@ -353,7 +353,7 @@ export class RequestHandler {
   }
 
   private async triggerReauth(showToast: ToastFunction): Promise<boolean> {
-    if (!this.client) return false
+    if (!this.reauth) return false
 
     const cooldownRemaining = REAUTH_FAILURE_COOLDOWN_MS - (Date.now() - this.lastFailedReauthAt)
     if (cooldownRemaining > 0) {
@@ -379,15 +379,8 @@ export class RequestHandler {
   private async performReauth(showToast: ToastFunction): Promise<boolean> {
     try {
       showToast('Session expired. Re-authenticating...', 'warning')
-      await this.client.provider.oauth.authorize({
-        path: { id: 'kiro' },
-        body: { method: 0 }
-      })
-
-      await this.client.provider.oauth.callback({
-        path: { id: 'kiro' },
-        body: { method: 0 }
-      })
+      if (!this.reauth) return false
+      if (!(await this.reauth())) return false
 
       this.repository.invalidateCache()
       const accounts = await this.repository.findAll()

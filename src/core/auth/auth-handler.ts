@@ -1,7 +1,7 @@
-import type { AuthHook } from '@opencode-ai/plugin'
 import type { AccountRepository } from '../../infrastructure/database/account-repository.js'
 import { RegionSchema } from '../../plugin/config/schema.js'
 import * as logger from '../../plugin/logger.js'
+import type { KiroAuthMethodSpec } from '../../plugin/types.js'
 import { summarizeUsage } from '../../plugin/usage.js'
 import { UsageTracker } from '../account/usage-tracker.js'
 import { IdcAuthMethod } from './idc-auth-method.js'
@@ -108,7 +108,7 @@ export class AuthHandler {
     this.accountManager = am
   }
 
-  getMethods(): AuthHook['methods'] {
+  getMethods(): KiroAuthMethodSpec[] {
     if (!this.accountManager) {
       return []
     }

@@ -1,13 +1,18 @@
-import type { AuthOuathResult } from '@opencode-ai/plugin'
 import { execFile } from 'node:child_process'
 import { extractRegionFromArn, normalizeRegion } from '../../constants.js'
 import type { AccountRepository } from '../../infrastructure/database/account-repository.js'
+import { encodeRefreshToken } from '../../kiro/auth.js'
 import { authorizeKiroIDC, pollKiroIDCToken } from '../../kiro/oauth-idc.js'
 import { createDeterministicAccountId } from '../../plugin/accounts.js'
 import * as logger from '../../plugin/logger.js'
 import { makePlaceholderEmail } from '../../plugin/sync/kiro-cli-parser.js'
 import { readActiveProfileArnFromKiroCli } from '../../plugin/sync/kiro-cli-profile.js'
-import type { KiroRegion, ManagedAccount } from '../../plugin/types.js'
+import type {
+  KiroAuthResult,
+  KiroAuthorizeCallbackResult,
+  KiroRegion,
+  ManagedAccount
+} from '../../plugin/types.js'
 import { fetchUsageLimits } from '../../plugin/usage.js'
 
 const openBrowser = (url: string) => {
@@ -56,7 +61,7 @@ export class IdcAuthMethod {
     private accountManager: any
   ) {}
 
-  async authorize(inputs?: Record<string, string>): Promise<AuthOuathResult> {
+  async authorize(inputs?: Record<string, string>): Promise<KiroAuthResult> {
     const configuredServiceRegion: KiroRegion = this.config.default_region
     const invokedWithoutPrompts = !inputs || Object.keys(inputs).length === 0
 
@@ -94,7 +99,7 @@ export class IdcAuthMethod {
       url: verificationUrl,
       instructions: `Open the verification URL and complete sign-in.\nCode: ${auth.userCode}`,
       method: 'auto',
-      callback: async (): Promise<{ type: 'success'; key: string } | { type: 'failed' }> => {
+      callback: async (): Promise<KiroAuthorizeCallbackResult> => {
         try {
           // Step 2: poll until token is issued (standard device-code flow)
           const token = await pollKiroIDCToken(
@@ -184,7 +189,27 @@ export class IdcAuthMethod {
           await this.repository.save(acc)
           this.accountManager?.addAccount?.(acc)
 
-          return { type: 'success', key: token.accessToken }
+          return {
+            type: 'success',
+            key: token.accessToken,
+            credential: {
+              refresh: encodeRefreshToken({
+                refreshToken: token.refreshToken,
+                clientId: token.clientId,
+                clientSecret: token.clientSecret,
+                authMethod: 'idc'
+              }),
+              access: token.accessToken,
+              expires: token.expiresAt,
+              metadata: {
+                email,
+                region: serviceRegion,
+                oidcRegion,
+                profileArn: profileArn ?? undefined,
+                startUrl: startUrl ?? undefined
+              }
+            }
+          }
         } catch (e: any) {
           const err = e instanceof Error ? e : new Error(String(e))
           logger.error('IDC auth callback failed', err)
