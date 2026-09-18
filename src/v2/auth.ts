@@ -154,29 +154,49 @@ function makeAuthorize(
     // Upstream opens the browser and starts the device flow.
     const result = (await idcMethod.authorize(inputs)) as unknown as UpstreamAuthorizeResult
 
-    return {
-      url: result.url,
-      instructions: result.instructions,
-      mode: 'auto' as const,
-      callback: async () => {
-        const out = await result.callback()
-        if (out.type !== 'success') throw new Error('Kiro authorization failed')
-        const payload = out.credential
-        if (!payload) {
-          throw new Error(
-            'kiro-auth-v2: authorization callback returned no credential payload (host seam mismatch)'
-          )
-        }
-        return {
-          type: 'oauth' as const,
-          methodID,
-          refresh: payload.refresh,
-          access: payload.access,
-          expires: payload.expires,
-          metadata: payload.metadata
-        }
-      }
+    return toHostAuthorization(result, methodID)
+  }
+}
+
+/**
+ * Maps the upstream device-flow result onto the host's promise-flavor OAuth authorization.
+ *
+ * `mode: "auto"` carries a Promise VALUE, not a function: see upstream
+ * `packages/plugin/src/promise/integration.ts:46-48` and its adapter, which wraps the field as
+ * `Effect.promise(() => authorization.callback)`. Handing it a function means the host calls
+ * `.then` on that function and the whole login fails with `... then is not a function`.
+ */
+export function toHostAuthorization(
+  result: UpstreamAuthorizeResult,
+  methodID: string
+): IntegrationOAuthAuthorization {
+  const callback = (async (): Promise<CredentialOAuth> => {
+    const out = await result.callback()
+    if (out.type !== 'success') throw new Error('Kiro authorization failed')
+    const payload = out.credential
+    if (!payload) {
+      throw new Error(
+        'kiro-auth-v2: authorization callback returned no credential payload (host seam mismatch)'
+      )
     }
+    return {
+      type: 'oauth' as const,
+      methodID,
+      refresh: payload.refresh,
+      access: payload.access,
+      expires: payload.expires,
+      metadata: payload.metadata
+    }
+  })()
+
+  // Observe the rejection now: the device flow can fail before the host attaches its handlers.
+  callback.catch(() => {})
+
+  return {
+    url: result.url,
+    instructions: result.instructions,
+    mode: 'auto' as const,
+    callback
   }
 }
 

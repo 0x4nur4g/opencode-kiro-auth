@@ -51,7 +51,13 @@ export type IntegrationOAuthAuthorization =
       instructions: string
       expiresAt?: number
       mode: 'auto'
-      callback: () => Promise<CredentialOAuth>
+      /**
+       * Promise VALUE, not a function: upstream `packages/plugin/src/promise/integration.ts:46-48`
+       * defines the auto callback as `Promise<Credential.OAuth>` and its host adapter wraps it with
+       * `Effect.promise(() => authorization.callback)` — a function value is never invoked and dies
+       * with `... then is not a function` (observed live on 2.0.7).
+       */
+      callback: Promise<CredentialOAuth>
     }
   | {
       url: string
