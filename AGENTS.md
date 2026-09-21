@@ -28,7 +28,7 @@ OpenCode work in this workspace has a docs-first gate. Consult these before gues
 | `/home/scan/tools/opencode-plugins/docs/opencode-v2-plugin-loading-and-config-shapes.md` | Registration forms, entry resolution. |
 | `/home/scan/tools/opencode-plugins/docs/opencode-v2-package-scope-rename-2.0.5.md` | `@opencode/*` (not `@opencode-ai/*`) type artifacts. |
 | `/home/scan/tools/opencode-plugins/docs/opencode-v2-plugin-raw-object-export.md` | Default-export contract. |
-| `/home/scan/tools/opencode-plugins/docs/opencode-v2-plugin-module-re-evaluation.md` | Host re-evaluates the plugin module on digest-gated reload: module-scope state resets; process singletons must anchor on the process global. |
+| `/home/scan/tools/opencode-plugins/docs/opencode-v2-plugin-module-re-evaluation.md` | Host re-evaluates the plugin module on digest-gated reload: module-scope state resets; process singletons must anchor on the process global; on revision changes the host runs the old activation's cleanup before the new `setup()` (rotation still severs; anchor prevents accumulation, not severing). |
 
 **Upstream source is the tie-breaker.** A full `sst/opencode` clone (tag `v2.0.6`) sits in scratch at
 `/tmp/opencode/kiro-port-probe/src-recon/op-repo` — authoritative for host behavior. Scratch is
@@ -92,6 +92,10 @@ Design decisions (full rationale in the primary doc):
    `globalThis[Symbol.for('kiro-auth-v2.sharedGateway')]` via `getSharedGateway`/
    `setSharedGateway` in `src/v2/gateway.ts` (fix `c97687c`; regression:
    `src/__tests__/gateway-lifetime.test.ts`). Keep every registration idempotent.
+   Note (2026-09-21, host source v2.0.12): the anchor prevents accumulation on the
+   no-teardown re-setup path, NOT the canonical rotation — a revision change still
+   stops the old gateway (force-closing in-flight SSE) and creates a new one on a new
+   port; see the gateway reload behavior bullet in Current state.
 3. Transform callbacks (`provider`, `model`, `tool`, `integration`) are deferred and replay very
    often. Bodies must be cheap, total, and guarded. An incomplete `Model.Info` poisons the catalog
    for **all** plugins (`time.released`, `limit`, `capabilities`, `variants`, `cost`, `status`,
@@ -135,10 +139,11 @@ or IAM Identity Center. Not reproducible on a box without Kiro credentials. On h
 ## Current state (verify against disk; evidence over self-report)
 
 - Last code commit is `c97687c` ("fix: anchor shared gateway on process global to survive
-  module re-evaluation"); before it `91b2bcf` ("test: pin oauth auto-mode callback as
+  module re-evaluation"); its docs commit `4fc58df` ("docs: record gateway lifetime defect
+  root cause, fix, and evidence") sits above it on `v2-port` (docs-only commits may stack
+  further). Before `c97687c`: `91b2bcf` ("test: pin oauth auto-mode callback as
   thenable value"), `e8bb79d` ("fix: surface zero-delta upstream streams as retryable errors"),
-  `e5a9c29` (oauth `mode:"auto"` promise-value fix) and `8d4407b` (V2 port). Docs-only
-  commits may sit above the last code commit.
+  `e5a9c29` (oauth `mode:"auto"` promise-value fix) and `8d4407b` (V2 port).
 - Live acceptance (2.0.7, isolated): plugin `active`, 24 kiro models, 2 oauth methods, gateway SSE
   correct without credentials. Evidence: `/tmp/opencode/kiro-port-probe2/accept/` (ephemeral).
 - The plugin is registered in the user's live config as a local dir path and loads there.
@@ -187,10 +192,41 @@ or IAM Identity Center. Not reproducible on a box without Kiro credentials. On h
   baseline lost to a server restart, fresh scan used — quality signal 4440→4441, no
   degradation; bottleneck remains the pre-existing acyclicity (raw 2), out of scope.
   General lesson: `docs/opencode-v2-plugin-module-re-evaluation.md` (workspace docs).
+- Gateway reload behavior resolved (2026-09-21; two independent read-only investigations
+  + isolated probes; host source cited at `sst/opencode` tag `v2.0.12` — the exact live
+  runtime version; scratch clone `/tmp/opencode/host-src/op-repo`, ephemeral). On a
+  reload whose plugin revision changed, the host closes the replaced activation's scope —
+  previous `setup()`'s cleanup, awaited — BEFORE the new `setup()` runs
+  (`packages/core/src/plugin.ts:127-146`; cleanup wiring
+  `packages/plugin/src/promise/adapter.ts:601-604`). Two distinct paths: (1) canonical
+  rotation — `stopped` + `created` pair, new ephemeral port (live capture `:44087` →
+  `:38983`, stop 16:31:14.861Z → create 16:31:14.937Z, 76 ms apart), in-flight SSE
+  force-closed by `stop(true)`, no reuse; isolated A/B shows post-fix identical to
+  pre-fix here — the anchor changes nothing on this path. (2) re-setup WITHOUT teardown
+  (failed slot / forked failure-close, `plugin.ts:208-221`) — the anchor makes the fresh
+  module instance reuse the live server; LIVE-PROVEN: 45 `reused` lines overall since
+  the fix; live service pid 61426 (read-only inspection only): 1 create + 10 reuses,
+  exactly one listener (pre-fix: 19 creates / 0 reuses in 3-5-server bursts);
+  fault-injection probe: `stop → create → reused`, one listener, host warnings
+  `failed to load plugin … fault-injection: anchor reuse probe` (injected revision
+  overwritten; tracked source byte-identical to HEAD). Revision ≠ digest: digest is a
+  content hash (`packages/plugin/src/source.ts:53-59`), revision embeds mtimes
+  (`packages/core/src/plugin/module.ts:123`;
+  `packages/core/src/config/plugin/source.ts:173-186`) — an mtime-only touch reloads
+  while the module instance stays the same (no touch-timing figures recorded; the
+  earlier "~0.5 s / 504 ms / 6 s" numbers were not reproducible). Strays mechanism: the
+  registry close loop skips slots with missing/failed activation (`plugin.ts:134`), so a
+  setup that dies pre-activation leaves an unclosable server. Caveats: severing is
+  available by mechanism but never observed (ECONNRESET windows 11:24Z/12:25Z contain
+  no error lines; 2026-09-18 socket-cut cause unproven); no controlled A/B on the
+  no-teardown path (live counts observational). Canonical record:
+  `docs/opencode-v2-plugin-module-re-evaluation.md` (workspace docs).
 - **Open work:** (a) real-credential completion (login completion, `refresh`, the CLI
   `opencode auth login` surface, the TTL `expired` transition); (b) fork URL + npm
-  scope/name decision; (c) live behavior of the process-global anchor under real host
-  reloads — unit-level distinct-instance simulation only so far, and a separate acceptance
-  unit is running that probe now; (d) whether a rotation still force-closes in-flight SSE
-  once reuse is in place — owned by the in-flight read-only host-ordering investigation;
-  explicitly open, do not speculate.
+  scope/name decision. Resolved 2026-09-21 (formerly (c) and (d)): live anchor behavior
+  under real host reloads — live-proven reuse on the no-teardown path (see the gateway
+  reload behavior bullet above); rotation force-closing in-flight SSE — yes by mechanism
+  (teardown-before-setup on revision changes, new port), though an actual severed stream
+  has never been observed. Remaining unknowns inside those: an observed severed stream
+  (2026-09-18 socket-cut cause still unproven) and a controlled A/B on the no-teardown
+  path (live counts are observational).
