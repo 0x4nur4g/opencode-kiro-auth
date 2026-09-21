@@ -100,7 +100,7 @@ Design decisions (full rationale in the primary doc):
 ```bash
 bun install                       # node_modules is required (tsc lives here)
 bun run typecheck                 # must be 0 errors
-bun test                          # baseline: 170 pass / 0 fail / 543 expects, 18 files
+bun test                          # baseline: 179 pass / 0 fail / 574 expects, 19 files (2026-09-21)
 ```
 
 Live isolated probe (never against the user's service):
@@ -125,11 +125,20 @@ or IAM Identity Center. Not reproducible on a box without Kiro credentials. On h
 
 ## Current state (verify against disk; evidence over self-report)
 
-- HEAD was `8d4407b` ("port plugin to OpenCode 2.x {id, setup} contract"); the oauth `mode:"auto"`
-  fix plus this file are the commit after it.
+- Last code commit is `e8bb79d` ("fix: surface zero-delta upstream streams as retryable
+  errors"); before it `e5a9c29` (oauth `mode:"auto"` promise-value fix) and `8d4407b`
+  (V2 port). Docs-only commits may sit above the last code commit.
 - Live acceptance (2.0.7, isolated): plugin `active`, 24 kiro models, 2 oauth methods, gateway SSE
   correct without credentials. Evidence: `/tmp/opencode/kiro-port-probe2/accept/` (ephemeral).
 - The plugin is registered in the user's live config as a local dir path and loads there.
+- Empty-stream guard (2026-09-21, `e8bb79d`): zero-delta upstream terminations now emit a
+  mid-stream chunk-level `error` event instead of the success terminal, so the host classifies
+  them UnknownProviderError (retryable) instead of persisting a silent empty assistant turn.
+  Both `transformSdkStream` and `transformKiroStream` are guarded; gateway create/reuse
+  lifecycle log lines (with port) write to `kiro-logs/plugin.log`. Tests: 8 guard cases +
+  1 converter case. Design + host citations:
+  `docs/opencode-v2-plugin-load-logs-and-empty-completions.md` (workspace docs, Resolution
+  section). Live wire behavior of the error chunk after 200 headers remains unverified.
 - **Open work:** (a) regression test asserting the auto-callback is a thenable value, not a
   function; (b) live probe of `POST /api/integration/oauth/connect` to confirm the login path no
   longer throws (the fix is typecheck/test-verified, not yet live-verified); (c) real-credential
