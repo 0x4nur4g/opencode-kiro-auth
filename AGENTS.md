@@ -207,26 +207,38 @@ or IAM Identity Center. Not reproducible on a box without Kiro credentials. On h
   module instance reuse the live server; LIVE-PROVEN: 45 `reused` lines overall since
   the fix; live service pid 61426 (read-only inspection only): 1 create + 10 reuses,
   exactly one listener (pre-fix: 19 creates / 0 reuses in 3-5-server bursts);
-  fault-injection probe: `stop → create → reused`, one listener, host warnings
-  `failed to load plugin … fault-injection: anchor reuse probe` (injected revision
-  overwritten; tracked source byte-identical to HEAD). Revision ≠ digest: digest is a
+  fault-injection probe: `stop → create → reused`, one listener. CONTROLLED A/B
+  (2026-09-21, probe `/tmp/opencode/kiro-ab-20260921/`, host `v2.0.12` both arms, repo
+  HEAD `4fc58df`, only `src/v2/gateway.ts` differing — arm A pre-fix `2c68d6d` sha
+  `e35f8878…661f`, arm B post-fix sha `ab54c5e5…85bc`, `plugin.ts` identical): identical
+  injected fault in both arms (`ab-fault-injection: post-claim setup failure` thrown at
+  `src/v2/plugin.ts:99`, immediately after the `claim()` on line 98; injected diff +
+  per-trigger before/after hashes recorded in `evidence/`) — arm A live listeners
+  1→2→3→4 (counters 1/0/0 → 7/0/0; leaked ports still answering HTTP), arm B exactly
+  ONE listener at every snapshot (counters 1/0/0 → 4/3/3); host reaction identical (3
+  failed loads, kiro `state=failed`); one run per arm; host-internal digest not exposed
+  in any log. Revision ≠ digest: digest is a
   content hash (`packages/plugin/src/source.ts:53-59`), revision embeds mtimes
   (`packages/core/src/plugin/module.ts:123`;
   `packages/core/src/config/plugin/source.ts:173-186`) — an mtime-only touch reloads
   while the module instance stays the same (no touch-timing figures recorded; the
   earlier "~0.5 s / 504 ms / 6 s" numbers were not reproducible). Strays mechanism: the
   registry close loop skips slots with missing/failed activation (`plugin.ts:134`), so a
-  setup that dies pre-activation leaves an unclosable server. Caveats: severing is
+  setup that dies pre-activation leaves an unclosable server. Caveat: severing is
   available by mechanism but never observed (ECONNRESET windows 11:24Z/12:25Z contain
-  no error lines; 2026-09-18 socket-cut cause unproven); no controlled A/B on the
-  no-teardown path (live counts observational). Canonical record:
+  no error lines; 2026-09-18 socket-cut cause unproven); a graceful drain in cleanup
+  (Bun `server.stop()` without the force flag) was considered and deliberately NOT
+  implemented — it would hold the host's activation lock for in-flight request
+  durations with no observed real-world impact, pending evidence. Canonical record:
   `docs/opencode-v2-plugin-module-re-evaluation.md` (workspace docs).
 - **Open work:** (a) real-credential completion (login completion, `refresh`, the CLI
   `opencode auth login` surface, the TTL `expired` transition); (b) fork URL + npm
   scope/name decision. Resolved 2026-09-21 (formerly (c) and (d)): live anchor behavior
-  under real host reloads — live-proven reuse on the no-teardown path (see the gateway
-  reload behavior bullet above); rotation force-closing in-flight SSE — yes by mechanism
-  (teardown-before-setup on revision changes, new port), though an actual severed stream
-  has never been observed. Remaining unknowns inside those: an observed severed stream
-  (2026-09-18 socket-cut cause still unproven) and a controlled A/B on the no-teardown
-  path (live counts are observational).
+  under real host reloads — live-proven reuse on the no-teardown path AND
+  controlled-A/B-proven (probe `/tmp/opencode/kiro-ab-20260921/`: only
+  `src/v2/gateway.ts` differing, pre-fix 1→2→3→4 live listeners vs post-fix 1 at every
+  step); rotation force-closing in-flight SSE — yes by mechanism (teardown-before-setup
+  on revision changes, new port), though an actual severed stream has never been
+  observed. Remaining unknown inside those: an observed severed stream (2026-09-18
+  socket-cut cause still unproven); graceful drain deliberately not implemented (would
+  hold the host's activation lock; no observed impact, pending evidence).
