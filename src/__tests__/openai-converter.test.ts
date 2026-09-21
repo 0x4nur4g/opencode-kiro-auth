@@ -22,4 +22,16 @@ describe('convertToOpenAI', () => {
 
     expect(chunk).toBeNull()
   })
+
+  test('emits a chunk-level error object for error events', () => {
+    const chunk = convertToOpenAI(
+      { type: 'error', error: { message: 'upstream produced nothing' } },
+      'chatcmpl-test',
+      'auto'
+    )
+
+    expect(chunk).not.toBeNull()
+    expect(chunk.error).toEqual({ message: 'upstream produced nothing' })
+    expect(chunk.choices).toEqual([])
+  })
 })

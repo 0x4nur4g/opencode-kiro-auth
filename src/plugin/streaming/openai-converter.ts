@@ -1,5 +1,14 @@
 import { StreamEvent } from './types.js'
 
+/**
+ * Signalled when an upstream stream terminates without a single content,
+ * reasoning, or tool-call delta. Carried as a chunk-level `error` object so
+ * OpenAI-compatible hosts classify the turn as a provider failure (retryable)
+ * instead of persisting a silent, empty assistant turn.
+ */
+export const EMPTY_STREAM_ERROR_MESSAGE =
+  'Kiro upstream stream ended with no content, reasoning, or tool-call deltas'
+
 export function convertToOpenAI(event: StreamEvent, id: string, model: string): any {
   const base = {
     id,
@@ -7,6 +16,10 @@ export function convertToOpenAI(event: StreamEvent, id: string, model: string): 
     created: Math.floor(Date.now() / 1000),
     model,
     choices: [] as any[]
+  }
+
+  if (event.type === 'error' && event.error) {
+    return { ...base, error: { message: event.error.message } }
   }
 
   if (event.type === 'content_block_delta') {

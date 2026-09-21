@@ -91,6 +91,9 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
   if (!existing) {
     await gateway.start()
     setSharedGateway(gateway)
+    notify(`Kiro gateway created at ${gateway.url()}`, 'info')
+  } else {
+    notify(`Kiro gateway reused at ${gateway.url()}`, 'info')
   }
   const ownerToken = gateway.claim(requestHandler, notify, region)
 

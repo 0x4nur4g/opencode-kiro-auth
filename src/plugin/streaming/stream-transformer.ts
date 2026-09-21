@@ -3,7 +3,7 @@ import { restoreToolName } from '../../infrastructure/transformers/tool-transfor
 import { getContextWindowSize } from '../models.js'
 import { estimateTokens } from '../response.js'
 import type { ToolNameMap } from '../types.js'
-import { convertToOpenAI } from './openai-converter.js'
+import { convertToOpenAI, EMPTY_STREAM_ERROR_MESSAGE } from './openai-converter.js'
 import { findRealTag, parseStreamBuffer } from './stream-parser.js'
 import { createTextDeltaEvents, createThinkingDeltaEvents, stopBlock } from './stream-state.js'
 import { StreamState, THINKING_END_TAG, THINKING_START_TAG, ToolCallState } from './types.js'
@@ -303,6 +303,20 @@ export async function* transformKiroStream(
       const contextWindow = getContextWindowSize(model)
       const totalTokens = Math.round((contextWindow * contextUsagePercentage) / 100)
       inputTokens = Math.max(0, totalTokens - outputTokens)
+    }
+
+    if (textOnlyContent === '' && toolCalls.length === 0) {
+      // Zero deltas of any kind reached the wire: no text, no reasoning, no
+      // tool-call start or arguments. Emit the error chunk and skip the
+      // success terminal so the host retries instead of persisting an empty
+      // assistant turn (finish "stop", content [], 0 output tokens).
+      const _c = convertToOpenAI(
+        { type: 'error', error: { message: EMPTY_STREAM_ERROR_MESSAGE } },
+        conversationId,
+        model
+      )
+      if (_c !== null) yield _c
+      return
     }
 
     {

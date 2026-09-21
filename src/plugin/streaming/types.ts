@@ -5,6 +5,7 @@ export interface StreamEvent {
   delta?: any
   index?: number
   usage?: any
+  error?: { message: string }
 }
 
 export interface StreamState {
