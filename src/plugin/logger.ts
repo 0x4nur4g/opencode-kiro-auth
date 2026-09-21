@@ -23,7 +23,7 @@ const writeToFile = (level: string, message: string, ...args: unknown[]) => {
     mkdirSync(dir, { recursive: true })
     const path = join(dir, 'plugin.log')
     const timestamp = new Date().toISOString()
-    const content = `[${timestamp}] ${level}: ${message} ${args
+    const content = `[${timestamp}] [pid ${process.pid}] ${level}: ${message} ${args
       .map((a) => {
         if (a instanceof Error) {
           return `${a.name}: ${a.message}${a.stack ? `\n${a.stack}` : ''}`

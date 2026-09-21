@@ -67,6 +67,13 @@ export class KiroGateway {
   }
 
   stop(): void {
+    if (this.server) {
+      try {
+        this.notify(`Kiro gateway stopped at ${this.url()}`, 'info')
+      } catch {
+        /* lifecycle notify must never break teardown */
+      }
+    }
     try {
       this.server?.stop(true)
     } catch {
@@ -166,13 +173,27 @@ function errorResponse(status: number, message: string): Response {
 /**
  * Shared-listener guard: a duplicated `setup` run reuses the same listener
  * instead of binding a second loopback port.
+ *
+ * The host re-evaluates the plugin module on hot reload, so a module-scope
+ * binding resets to `undefined` in every fresh module instance: the `reused`
+ * branch never fired and each reload bound another loopback server (live log,
+ * 2026-09-21: 19 `created`, 0 `reused`, two servers co-listening 2h21m). Anchor
+ * the gateway on the process global via `Symbol.for`, which resolves to the
+ * same key in every module instance of this process.
  */
-let sharedGateway: KiroGateway | undefined
+const SHARED_GATEWAY_KEY = Symbol.for('kiro-auth-v2.sharedGateway')
+
+/** Typed symbol-indexed view of the process global; keeps the anchor `any`-free. */
+type GatewayAnchor = Record<symbol, KiroGateway | undefined>
+
+function gatewayAnchor(): GatewayAnchor {
+  return globalThis as unknown as GatewayAnchor
+}
 
 export function getSharedGateway(): KiroGateway | undefined {
-  return sharedGateway
+  return gatewayAnchor()[SHARED_GATEWAY_KEY]
 }
 
 export function setSharedGateway(gateway: KiroGateway | undefined): void {
-  sharedGateway = gateway
+  gatewayAnchor()[SHARED_GATEWAY_KEY] = gateway
 }
