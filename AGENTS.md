@@ -80,7 +80,8 @@ Design decisions (full rationale in the primary doc):
    the host calls `.then` on that function: login dies with
    `E(()=>e(r)).then is not a function` (hit live on 2.0.7, 2026-09-18).
    Fixed by `toHostAuthorization()` in `src/v2/auth.ts` — keep the eager promise, keep the
-   `callback.catch(() => {})` guard, and keep `src/__tests__/` coverage for the shape.
+   `callback.catch(() => {})` guard, and keep `src/__tests__/` coverage for the shape
+   (regression guard: `src/__tests__/oauth-callback-shape.test.ts`).
 2. `setup` may run more than once per process (hot reload / duplicate registration). Keep the
    gateway a process singleton and every registration idempotent.
 3. Transform callbacks (`provider`, `model`, `tool`, `integration`) are deferred and replay very
@@ -100,7 +101,7 @@ Design decisions (full rationale in the primary doc):
 ```bash
 bun install                       # node_modules is required (tsc lives here)
 bun run typecheck                 # must be 0 errors
-bun test                          # baseline: 179 pass / 0 fail / 574 expects, 19 files (2026-09-21)
+bun test                          # baseline: 181 pass / 0 fail / 585 expects, 20 files (2026-09-21)
 ```
 
 Live isolated probe (never against the user's service):
@@ -125,9 +126,10 @@ or IAM Identity Center. Not reproducible on a box without Kiro credentials. On h
 
 ## Current state (verify against disk; evidence over self-report)
 
-- Last code commit is `e8bb79d` ("fix: surface zero-delta upstream streams as retryable
-  errors"); before it `e5a9c29` (oauth `mode:"auto"` promise-value fix) and `8d4407b`
-  (V2 port). Docs-only commits may sit above the last code commit.
+- Last code commit is `91b2bcf` ("test: pin oauth auto-mode callback as thenable value");
+  before it `e8bb79d` ("fix: surface zero-delta upstream streams as retryable errors"),
+  `e5a9c29` (oauth `mode:"auto"` promise-value fix) and `8d4407b` (V2 port). Docs-only
+  commits may sit above the last code commit.
 - Live acceptance (2.0.7, isolated): plugin `active`, 24 kiro models, 2 oauth methods, gateway SSE
   correct without credentials. Evidence: `/tmp/opencode/kiro-port-probe2/accept/` (ephemeral).
 - The plugin is registered in the user's live config as a local dir path and loads there.
@@ -138,9 +140,14 @@ or IAM Identity Center. Not reproducible on a box without Kiro credentials. On h
   lifecycle log lines (with port) write to `kiro-logs/plugin.log`. Tests: 8 guard cases +
   1 converter case. Design + host citations:
   `docs/opencode-v2-plugin-load-logs-and-empty-completions.md` (workspace docs, Resolution
-  section). Live wire behavior of the error chunk after 200 headers remains unverified.
-- **Open work:** (a) regression test asserting the auto-callback is a thenable value, not a
-  function; (b) live probe of `POST /api/integration/oauth/connect` to confirm the login path no
-  longer throws (the fix is typecheck/test-verified, not yet live-verified); (c) real-credential
-  completion; (d) fork URL + npm scope/name decision; (e) the primary doc's `mode: "auto"` type
-  snippet must be corrected to the promise shape.
+  section). Live wire verified 2026-09-21 — see the wire-verification bullet below.
+- Wire verification (2026-09-21, isolated probe, opencode v2.0.11, evidence:
+  `/tmp/opencode/kiro-host-err-probe/`, ephemeral): the host honors the mid-stream chunk-level
+  `error` object after 200 headers, classifies `provider.unknown`, and retries (10 attempts,
+  jittered exponential backoff, 2s→10s cap). The probe's control arm showed the host has no
+  zero-content guard of its own (a stream terminating with neither content nor an error chunk
+  is accepted as a successful empty turn), so the plugin-side guard remains necessary. An
+  independent verifier reproduced the verdict from the isolated probe DB.
+- **Open work:** (a) live probe of `POST /api/integration/oauth/connect` to confirm the login path
+  no longer throws (the fix is typecheck/test-verified, not yet live-verified); (b) real-credential
+  completion; (c) fork URL + npm scope/name decision.
