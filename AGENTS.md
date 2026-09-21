@@ -28,6 +28,7 @@ OpenCode work in this workspace has a docs-first gate. Consult these before gues
 | `/home/scan/tools/opencode-plugins/docs/opencode-v2-plugin-loading-and-config-shapes.md` | Registration forms, entry resolution. |
 | `/home/scan/tools/opencode-plugins/docs/opencode-v2-package-scope-rename-2.0.5.md` | `@opencode/*` (not `@opencode-ai/*`) type artifacts. |
 | `/home/scan/tools/opencode-plugins/docs/opencode-v2-plugin-raw-object-export.md` | Default-export contract. |
+| `/home/scan/tools/opencode-plugins/docs/opencode-v2-plugin-module-re-evaluation.md` | Host re-evaluates the plugin module on digest-gated reload: module-scope state resets; process singletons must anchor on the process global. |
 
 **Upstream source is the tie-breaker.** A full `sst/opencode` clone (tag `v2.0.6`) sits in scratch at
 `/tmp/opencode/kiro-port-probe/src-recon/op-repo` — authoritative for host behavior. Scratch is
@@ -82,8 +83,15 @@ Design decisions (full rationale in the primary doc):
    Fixed by `toHostAuthorization()` in `src/v2/auth.ts` — keep the eager promise, keep the
    `callback.catch(() => {})` guard, and keep `src/__tests__/` coverage for the shape
    (regression guard: `src/__tests__/oauth-callback-shape.test.ts`).
-2. `setup` may run more than once per process (hot reload / duplicate registration). Keep the
-   gateway a process singleton and every registration idempotent.
+2. `setup` may run more than once per process (hot reload / duplicate registration), AND the
+   host re-evaluates the plugin module on digest-gated reload: module-scope state does NOT
+   survive re-evaluation. The old module-scope `let sharedGateway` reset on every reload, so
+   the CREATE branch in `setup()` fired each time and the reuse branch never fired (live:
+   19 `Kiro gateway created at` vs 0 `reused`, two listeners 4.8 s apart, both LISTEN
+   2 h 21 m). A process-wide singleton must be anchored on the process global:
+   `globalThis[Symbol.for('kiro-auth-v2.sharedGateway')]` via `getSharedGateway`/
+   `setSharedGateway` in `src/v2/gateway.ts` (fix `c97687c`; regression:
+   `src/__tests__/gateway-lifetime.test.ts`). Keep every registration idempotent.
 3. Transform callbacks (`provider`, `model`, `tool`, `integration`) are deferred and replay very
    often. Bodies must be cheap, total, and guarded. An incomplete `Model.Info` poisons the catalog
    for **all** plugins (`time.released`, `limit`, `capabilities`, `variants`, `cost`, `status`,
@@ -101,7 +109,7 @@ Design decisions (full rationale in the primary doc):
 ```bash
 bun install                       # node_modules is required (tsc lives here)
 bun run typecheck                 # must be 0 errors
-bun test                          # baseline: 181 pass / 0 fail / 585 expects, 20 files (2026-09-21)
+bun test                          # baseline: 183 pass / 0 fail / 591 expects, 21 files (2026-09-21)
 ```
 
 Live isolated probe (never against the user's service):
@@ -126,8 +134,9 @@ or IAM Identity Center. Not reproducible on a box without Kiro credentials. On h
 
 ## Current state (verify against disk; evidence over self-report)
 
-- Last code commit is `91b2bcf` ("test: pin oauth auto-mode callback as thenable value");
-  before it `e8bb79d` ("fix: surface zero-delta upstream streams as retryable errors"),
+- Last code commit is `c97687c` ("fix: anchor shared gateway on process global to survive
+  module re-evaluation"); before it `91b2bcf` ("test: pin oauth auto-mode callback as
+  thenable value"), `e8bb79d` ("fix: surface zero-delta upstream streams as retryable errors"),
   `e5a9c29` (oauth `mode:"auto"` promise-value fix) and `8d4407b` (V2 port). Docs-only
   commits may sit above the last code commit.
 - Live acceptance (2.0.7, isolated): plugin `active`, 24 kiro models, 2 oauth methods, gateway SSE
@@ -137,8 +146,8 @@ or IAM Identity Center. Not reproducible on a box without Kiro credentials. On h
   mid-stream chunk-level `error` event instead of the success terminal, so the host classifies
   them UnknownProviderError (retryable) instead of persisting a silent empty assistant turn.
   Both `transformSdkStream` and `transformKiroStream` are guarded; gateway create/reuse
-  lifecycle log lines (with port) write to `kiro-logs/plugin.log`. Tests: 8 guard cases +
-  1 converter case. Design + host citations:
+  lifecycle log lines (with port) write to `kiro-logs/plugin.log` (stop lines + `[pid]` tags
+  were added by `c97687c`). Tests: 8 guard cases + 1 converter case. Design + host citations:
   `docs/opencode-v2-plugin-load-logs-and-empty-completions.md` (workspace docs, Resolution
   section). Live wire verified 2026-09-21 — see the wire-verification bullet below.
 - Wire verification (2026-09-21, isolated probe, opencode v2.0.11, evidence:
@@ -148,6 +157,40 @@ or IAM Identity Center. Not reproducible on a box without Kiro credentials. On h
   zero-content guard of its own (a stream terminating with neither content nor an error chunk
   is accepted as a successful empty turn), so the plugin-side guard remains necessary. An
   independent verifier reproduced the verdict from the isolated probe DB.
-- **Open work:** (a) live probe of `POST /api/integration/oauth/connect` to confirm the login path
-  no longer throws (the fix is typecheck/test-verified, not yet live-verified); (b) real-credential
-  completion; (c) fork URL + npm scope/name decision.
+- Live connect probe (2026-09-21, isolated, opencode v2.0.11, evidence:
+  `/tmp/opencode/kiro-connect-probe/`, ephemeral): correct endpoint is
+  `POST /api/integration/:integrationID/connect/oauth` (concretely
+  `/api/integration/kiro/connect/oauth`), polled at
+  `GET /api/integration/<integrationID>/connect/oauth/<attemptID>`; the older
+  `/api/integration/oauth/connect` spelling is wrong. Both oauth methods returned HTTP 200 in
+  under 1s with `mode:"auto"`, a verification URL (host `view.awsapps.com`) and a user code;
+  attempts then sat `pending`. No `E()=>e(r)).then is not a function` and no `TypeError` in any
+  probe runtime artifact; an independent verifier re-grepped the whole probe tree with 0 hits.
+  Still unverified without a Kiro account: login completion, `refresh`, the CLI
+  `opencode auth login` surface, and the TTL `expired` transition.
+- Gateway lifetime defect (2026-09-21, `c97687c`): the "process singleton" was
+  module-evaluation-scoped (`let sharedGateway`, `src/v2/gateway.ts:170-178`); the host
+  re-evaluates the plugin module on digest-gated reload, so each fresh instance took the
+  CREATE branch (`src/v2/plugin.ts:88-98`) — the reuse branch had never fired. Live evidence
+  pre-restart: 19 `Kiro gateway created at` lines vs 0 `Kiro gateway reused at`; two
+  servers 4.8 s apart (`:39811` 10:12:55.876Z, `:35621` 10:13:00.664Z) while the first still
+  listened; both stayed LISTEN 2 h 21 m across two rotations. The host DID tear down
+  replaced entries (three superseded listeners closed at 12:25:58Z, verified by
+  `/proc/<pid>/fd` inode disappearance) — strays are entries whose teardown never ran, not
+  servers the host never closes. Fix anchors the gateway on
+  `globalThis[Symbol.for('kiro-auth-v2.sharedGateway')]` behind typed `getSharedGateway`/
+  `setSharedGateway`, adds a guarded idempotent `Kiro gateway stopped at <url>` notify in
+  `stop()`, `[pid]`-tagged log lines (`src/plugin/logger.ts:26`), and
+  `src/__tests__/gateway-lifetime.test.ts` (62 lines: cross-instance anchor via a distinct
+  ESM specifier `?instance=2` plus stop visibility). Red→green captured pre/post fix. Gates
+  after: `bun run typecheck` 0 errors; `bun test` 183/0/591/21. Sentrux: MCP session
+  baseline lost to a server restart, fresh scan used — quality signal 4440→4441, no
+  degradation; bottleneck remains the pre-existing acyclicity (raw 2), out of scope.
+  General lesson: `docs/opencode-v2-plugin-module-re-evaluation.md` (workspace docs).
+- **Open work:** (a) real-credential completion (login completion, `refresh`, the CLI
+  `opencode auth login` surface, the TTL `expired` transition); (b) fork URL + npm
+  scope/name decision; (c) live behavior of the process-global anchor under real host
+  reloads — unit-level distinct-instance simulation only so far, and a separate acceptance
+  unit is running that probe now; (d) whether a rotation still force-closes in-flight SSE
+  once reuse is in place — owned by the in-flight read-only host-ordering investigation;
+  explicitly open, do not speculate.
