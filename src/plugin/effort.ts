@@ -23,44 +23,45 @@ export const THINKING_BUDGETS: Readonly<Record<Effort, number>> = {
 }
 
 /**
- * Models that support the 5-value effort enum (including xhigh).
- * Per Kiro's effort docs, this is opus-4.7/4.8/5 and sonnet-5.
+ * Effort capability by Claude version rule, not a maintained model list
+ * (the catalog itself is generated per account; new releases must not need a
+ * plugin edit to light up):
+ *
+ * - 4-value effort enum (low/medium/high/max): Opus and Sonnet from 4.5 on.
+ * - 5-value enum (adds xhigh): Opus from 4.7 on, Sonnet from 5 on.
+ *   xhigh requests elsewhere are clamped to max.
+ *
+ * Haiku and non-Claude models take no effort parameter.
  */
-const XHIGH_CAPABLE_MODELS = new Set([
-  'claude-opus-4.7',
-  'claude-opus-4.8',
-  'claude-opus-5',
-  'claude-sonnet-5',
-  'claude-sonnet-5-1m'
-])
-
-/**
- * Models that support the 4-value effort enum (no xhigh).
- * xhigh requests on these models are clamped to max.
- */
-const EFFORT_CAPABLE_MODELS = new Set([
-  'claude-opus-4.5',
-  'claude-opus-4.6',
-  'claude-opus-4.6-1m',
-  'claude-sonnet-4.5',
-  'claude-sonnet-4.5-1m',
-  'claude-sonnet-4.6',
-  'claude-sonnet-4.6-1m',
-  ...XHIGH_CAPABLE_MODELS
-])
+function parseClaudeVersion(
+  kiroModel: string
+): { family: 'opus' | 'sonnet'; major: number; minor: number } | undefined {
+  const match = /^claude-(opus|sonnet)-(\d+)(?:\.(\d+))?/.exec(kiroModel)
+  if (!match) return undefined
+  return {
+    family: match[1] as 'opus' | 'sonnet',
+    major: Number(match[2]),
+    minor: match[3] ? Number(match[3]) : 0
+  }
+}
 
 /**
  * Check if a model supports the effort parameter.
  */
 export function supportsEffort(kiroModel: string): boolean {
-  return EFFORT_CAPABLE_MODELS.has(kiroModel)
+  const v = parseClaudeVersion(kiroModel)
+  if (!v) return false
+  return v.major > 4 || (v.major === 4 && v.minor >= 5)
 }
 
 /**
  * Check if a model supports xhigh effort level.
  */
 export function supportsXHighEffort(kiroModel: string): boolean {
-  return XHIGH_CAPABLE_MODELS.has(kiroModel)
+  const v = parseClaudeVersion(kiroModel)
+  if (!v) return false
+  if (v.family === 'opus') return v.major > 4 || (v.major === 4 && v.minor >= 7)
+  return v.major >= 5
 }
 
 /**

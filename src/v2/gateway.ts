@@ -66,6 +66,11 @@ export class KiroGateway {
     return `http://127.0.0.1:${this.port}`
   }
 
+  /** True while the listener is bound. `url()` is meaningless otherwise (port 0). */
+  isLive(): boolean {
+    return this.server !== undefined && this.port > 0
+  }
+
   stop(): void {
     if (this.server) {
       try {

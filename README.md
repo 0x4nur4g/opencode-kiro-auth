@@ -111,8 +111,13 @@ required for local development. Restart OpenCode to pick up changes.
 
 ## Models and thinking
 
-The plugin advertises the Kiro registry (24 models at the time of writing) under the
-`kiro` provider, including a `-thinking` companion for every effort-capable model.
+The plugin generates the model catalog from your account: at startup it calls
+Kiro's `ListAvailableModels` for each logged-in account and advertises the union
+under the `kiro` provider, including a `-thinking` companion for every
+effort-capable Claude model. The last-good list is cached at
+`<config-dir>/opencode/kiro-models.json` and refreshed in the background on every
+start, so new Kiro models appear without a plugin update. There is no static
+fallback list — if the account cannot list models, inference would fail too.
 Run `/models` and pick one. Defining `provider.kiro.models` yourself replaces the
 plugin's registry entirely.
 
@@ -138,9 +143,10 @@ Variants set `thinkingConfig.thinkingBudget`, mapped to Kiro's `effort`:
 | `<= 98304`      | `xhigh`     |
 | `> 98304`       | `max`       |
 
-`xhigh` is only offered by opus-4.7, opus-4.8, opus-5 and sonnet-5; other thinking
-models carry a four-variant ladder and clamp the `xhigh` band to `max`. Kiro's
-GPT-5.6 tiers are not advertised (they need a different reasoning request shape).
+`xhigh` is offered on Opus 4.7+ and Sonnet 5+ (a version rule, not a model list);
+other thinking models carry a four-variant ladder and clamp the `xhigh` band to
+`max`. Non-Claude models (GPT tiers, open-weight models) are advertised exactly
+as the account lists them, without thinking companions.
 
 ## Configuration
 
@@ -235,7 +241,7 @@ carry it too.
 ## Manual acceptance (real credentials)
 
 The port was acceptance-tested against a live OpenCode 2.0.7 service with isolated
-`HOME`/`XDG_*` and a stub credential store: plugin active, 24 models served through
+`HOME`/`XDG_*` and a stub credential store: plugin active, models generated from the account cache served through
 the loopback provider, 2 OAuth methods with forms, and the gateway answering
 `text/event-stream` with a terminating `finish_reason: "stop"` chunk. A real-account
 run still needs credentials this environment does not have:

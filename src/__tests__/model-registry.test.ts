@@ -1,11 +1,28 @@
 import { describe, expect, test } from 'bun:test'
-import { SUPPORTED_MODELS } from '../constants.js'
+import type { WireModel } from '../plugin/available-models.js'
 import type { Effort } from '../plugin/config/schema.js'
 import { budgetToEffort, THINKING_BUDGETS } from '../plugin/effort.js'
 import { buildModelRegistry } from '../plugin/model-registry.js'
-import { resolveKiroModel } from '../plugin/models.js'
+import { knownModelIds, resolveKiroModel } from '../plugin/models.js'
 
-const registry = buildModelRegistry() as Record<string, any>
+// Fixture shaped like a ListAvailableModels response; the registry is
+// generated from this data, never from a maintained in-repo list.
+const FIXTURE: WireModel[] = [
+  { modelId: 'auto', modelName: 'Auto', maxInputTokens: 200000 },
+  { modelId: 'claude-sonnet-4.5', modelName: 'Claude Sonnet 4.5', maxInputTokens: 200000 },
+  { modelId: 'claude-sonnet-4.6', modelName: 'Claude Sonnet 4.6', maxInputTokens: 1000000 },
+  { modelId: 'claude-sonnet-5', modelName: 'Claude Sonnet 5', maxInputTokens: 1000000 },
+  { modelId: 'claude-haiku-4.5', modelName: 'Claude Haiku 4.5', maxInputTokens: 200000 },
+  { modelId: 'claude-opus-4.5', modelName: 'Claude Opus 4.5', maxInputTokens: 200000 },
+  { modelId: 'claude-opus-4.6', modelName: 'Claude Opus 4.6', maxInputTokens: 1000000 },
+  { modelId: 'claude-opus-4.7', modelName: 'Claude Opus 4.7', maxInputTokens: 1000000 },
+  { modelId: 'claude-opus-4.8', modelName: 'Claude Opus 4.8', maxInputTokens: 1000000 },
+  { modelId: 'claude-opus-5', modelName: 'Claude Opus 5', maxInputTokens: 1000000 },
+  { modelId: 'deepseek-3.2', modelName: 'DeepSeek 3.2', maxInputTokens: 128000 },
+  { modelId: 'gpt-5.6-sol', modelName: 'GPT-5.6 Sol', maxInputTokens: 1000000 }
+]
+
+const registry = buildModelRegistry(FIXTURE) as Record<string, any>
 
 const thinkingIDs = Object.keys(registry).filter((id) => id.endsWith('-thinking'))
 const XHIGH_MODELS = [
@@ -18,7 +35,8 @@ const XHIGH_MODELS = [
 describe('model registry', () => {
   test('every advertised model is resolvable to a Kiro model ID', () => {
     for (const modelID of Object.keys(registry)) {
-      expect(SUPPORTED_MODELS).toContain(modelID)
+      expect(knownModelIds()).toContain(modelID)
+      expect(resolveKiroModel(modelID)).toBeTruthy()
     }
   })
 
@@ -37,10 +55,10 @@ describe('model registry', () => {
     )
   })
 
-  test('does not advertise Kiro GPT tiers, which use a different reasoning contract', () => {
-    for (const id of Object.keys(registry)) {
-      expect(id.startsWith('gpt-')).toBe(false)
-    }
+  test('advertises non-Claude models under their wire ID without thinking twins', () => {
+    expect(registry['gpt-5.6-sol']).toBeDefined()
+    expect(registry['gpt-5.6-sol-thinking']).toBeUndefined()
+    expect(registry['deepseek-3.2']).toBeDefined()
   })
 
   describe('reasoning capability flags', () => {

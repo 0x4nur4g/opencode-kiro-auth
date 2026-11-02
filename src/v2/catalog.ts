@@ -1,28 +1,66 @@
+import type { WireModel } from '../plugin/available-models.js'
 import { buildModelRegistry } from '../plugin/model-registry.js'
 import type { ModelInfoDraft, PluginContext, Registration } from './host-types.js'
 
 /**
  * Register the Kiro provider plus its model catalog in one transform.
  *
- * One-shot: if the provider ID already exists (user config, another plugin, a
- * duplicated setup run) nothing is added, so the user's own provider block wins.
+ * The transform replays very often, so the body is signature-guarded: it writes
+ * only when the gateway URL or the model ID list actually changed. Two failure
+ * modes shaped this:
+ *
+ * - A stopped gateway reports port 0. Writing that URL poisons the provider
+ *   record (`http://127.0.0.1:0`); every model call then fails ECONNREFUSED
+ *   while the real gateway listens elsewhere. A dead gateway writes nothing.
+ * - The gateway rotates to a new port on host reload. An existing provider
+ *   record must be updated to the live URL, not left pointing at the old port.
+ *
+ * If the provider ID already exists with a different package (user config,
+ * another plugin) it is left untouched, so the user's own provider block wins.
  */
 export function registerKiroCatalog(
   ctx: PluginContext,
-  opts: { providerID: string; gatewayUrl: () => string; models: Array<ModelInfoDraft> }
+  opts: {
+    providerID: string
+    gatewayUrl: () => string
+    gatewayLive: () => boolean
+    getModels: () => Array<ModelInfoDraft>
+  }
 ): Promise<Registration> {
+  let appliedSignature = ''
   return ctx.provider.transform((draft) => {
-    if (draft.get(opts.providerID)) return
-    draft.add({
-      info: {
-        id: opts.providerID,
-        name: 'Kiro',
-        activation: 'enabled',
-        package: '@opencode/ai/providers/openai-compatible',
-        settings: { baseURL: opts.gatewayUrl() }
-      },
-      models: opts.models
+    if (!opts.gatewayLive()) return
+    const baseURL = opts.gatewayUrl()
+    const models = opts.getModels()
+    const signature = `${baseURL}|${models.map((m) => m.id).join(',')}`
+    const existing = draft.get(opts.providerID) as
+      | { package?: unknown; settings?: { baseURL?: unknown } }
+      | undefined
+    if (!existing) {
+      draft.add({
+        info: {
+          id: opts.providerID,
+          name: 'Kiro',
+          activation: 'enabled',
+          package: '@opencode/ai/providers/openai-compatible',
+          settings: { baseURL }
+        },
+        models
+      })
+      appliedSignature = signature
+      return
+    }
+    if (existing.package !== '@opencode/ai/providers/openai-compatible') return
+    // Only ever repoint a loopback URL: that is this plugin's gateway shape.
+    // A non-loopback baseURL means a user-owned provider block; leave it alone.
+    const existingBase = existing.settings?.baseURL
+    if (typeof existingBase === 'string' && !existingBase.startsWith('http://127.0.0.1')) return
+    if (signature === appliedSignature && existingBase === baseURL) return
+    draft.update(opts.providerID, (provider) => {
+      provider.settings = { ...(provider.settings ?? {}), baseURL }
     })
+    draft.models.set(opts.providerID, models)
+    appliedSignature = signature
   })
 }
 
@@ -34,8 +72,11 @@ export function registerKiroCatalog(
  * JSON round-trip. `settings.apiKey` is a non-secret placeholder required by the
  * openai-compatible factory — never a credential.
  */
-export function buildV2ModelRegistry(providerID: string): Array<ModelInfoDraft> {
-  const registry = buildModelRegistry()
+export function buildV2ModelRegistry(
+  providerID: string,
+  wireModels: WireModel[]
+): Array<ModelInfoDraft> {
+  const registry = buildModelRegistry(wireModels)
   const models: Array<ModelInfoDraft> = []
 
   for (const [modelID, raw] of Object.entries(registry)) {

@@ -1,5 +1,6 @@
+import type { WireModel } from './available-models.js'
 import { EFFORT_LEVELS, supportsEffort, supportsXHighEffort, THINKING_BUDGETS } from './effort.js'
-import { resolveKiroModel } from './models.js'
+import { registerModelPair } from './models.js'
 
 type Modalities = {
   input: Array<'text' | 'image' | 'pdf'>
@@ -11,133 +12,21 @@ const TEXT_IMAGE: Modalities = { input: ['text', 'image'], output: ['text'] }
 const MULTIMODAL: Modalities = { input: ['text', 'image', 'pdf'], output: ['text'] }
 
 const CONTEXT_200K = { context: 200000, output: 64000 }
-const CONTEXT_1M = { context: 1000000, output: 64000 }
-
-interface ModelSpec {
-  /** Display name, without the credit multiplier suffix. */
-  name: string
-  /** Kiro credit multiplier, rendered into the display name. */
-  rate: string
-  limit: { context: number; output: number }
-  modalities: Modalities
-  /**
-   * Emit a companion `-thinking` entry. Only set for Claude models that accept
-   * `output_config.effort`; the effort ladder is derived from the model's own
-   * capabilities in effort.ts.
-   */
-  thinking?: boolean
-}
 
 /**
- * Models Kiro exposes, keyed by the OpenCode-facing model ID.
- *
- * Anthropic and open-weight models only. Kiro's GPT-5.6 tiers are deliberately
- * absent: they configure reasoning through `reasoning.effort` / `reasoning.mode`
- * rather than `output_config.effort`, so they need their own request path.
+ * OpenCode-facing ID for a Kiro wire ID. Claude models keep the established
+ * dash form (`claude-opus-4.5` -> `claude-opus-4-5`, matching existing user
+ * configs); every other family uses its wire ID unchanged (`gpt-5.6-sol`,
+ * `deepseek-3.2`). This is a spelling rule over API data, not a model list.
  */
-const MODEL_SPECS: Record<string, ModelSpec> = {
-  auto: { name: 'Auto', rate: '1.0x', limit: CONTEXT_200K, modalities: MULTIMODAL },
+export function toOpenCodeModelId(wireId: string): string {
+  return wireId.startsWith('claude-') ? wireId.replace(/\./g, '-') : wireId
+}
 
-  // Claude Sonnet
-  'claude-sonnet-4': {
-    name: 'Claude Sonnet 4.0',
-    rate: '1.3x',
-    limit: CONTEXT_200K,
-    modalities: MULTIMODAL
-  },
-  'claude-sonnet-4-5': {
-    name: 'Claude Sonnet 4.5',
-    rate: '1.3x',
-    limit: CONTEXT_200K,
-    modalities: MULTIMODAL,
-    thinking: true
-  },
-  'claude-sonnet-4-6': {
-    name: 'Claude Sonnet 4.6',
-    rate: '1.3x',
-    limit: CONTEXT_1M,
-    modalities: MULTIMODAL,
-    thinking: true
-  },
-  'claude-sonnet-5': {
-    name: 'Claude Sonnet 5',
-    rate: '1.3x',
-    limit: CONTEXT_1M,
-    modalities: MULTIMODAL,
-    thinking: true
-  },
-
-  // Claude Haiku
-  'claude-haiku-4-5': {
-    name: 'Claude Haiku 4.5',
-    rate: '0.4x',
-    limit: CONTEXT_200K,
-    modalities: TEXT_IMAGE
-  },
-
-  // Claude Opus
-  'claude-opus-4-5': {
-    name: 'Claude Opus 4.5',
-    rate: '2.2x',
-    limit: CONTEXT_200K,
-    modalities: MULTIMODAL,
-    thinking: true
-  },
-  'claude-opus-4-6': {
-    name: 'Claude Opus 4.6',
-    rate: '2.2x',
-    limit: CONTEXT_1M,
-    modalities: MULTIMODAL,
-    thinking: true
-  },
-  'claude-opus-4-7': {
-    name: 'Claude Opus 4.7',
-    rate: '2.2x',
-    limit: CONTEXT_1M,
-    modalities: MULTIMODAL,
-    thinking: true
-  },
-  'claude-opus-4-8': {
-    name: 'Claude Opus 4.8',
-    rate: '2.2x',
-    limit: CONTEXT_1M,
-    modalities: MULTIMODAL,
-    thinking: true
-  },
-  'claude-opus-5': {
-    name: 'Claude Opus 5',
-    rate: '2.2x',
-    limit: CONTEXT_1M,
-    modalities: MULTIMODAL,
-    thinking: true
-  },
-
-  // Open weight models
-  'deepseek-3.2': {
-    name: 'DeepSeek 3.2',
-    rate: '0.25x',
-    limit: { context: 128000, output: 64000 },
-    modalities: TEXT_ONLY
-  },
-  'glm-5': { name: 'GLM-5', rate: '0.5x', limit: CONTEXT_200K, modalities: TEXT_ONLY },
-  'minimax-m2.5': {
-    name: 'MiniMax M2.5',
-    rate: '0.25x',
-    limit: { context: 196000, output: 64000 },
-    modalities: TEXT_ONLY
-  },
-  'minimax-m2.1': {
-    name: 'MiniMax M2.1',
-    rate: '0.15x',
-    limit: { context: 196000, output: 64000 },
-    modalities: TEXT_ONLY
-  },
-  'qwen3-coder-next': {
-    name: 'Qwen3 Coder Next',
-    rate: '0.05x',
-    limit: { context: 256000, output: 64000 },
-    modalities: TEXT_ONLY
-  }
+function modalitiesFor(wireId: string): Modalities {
+  if (wireId.startsWith('claude-')) return MULTIMODAL
+  if (wireId.startsWith('gpt-') || wireId.startsWith('kimi-')) return TEXT_IMAGE
+  return TEXT_ONLY
 }
 
 /**
@@ -158,39 +47,47 @@ function buildVariants(kiroModel: string): Record<string, unknown> {
 }
 
 /**
- * Model registry advertised to OpenCode.
+ * Model registry advertised to OpenCode, generated from the account's
+ * ListAvailableModels data (live fetch or the last-good cache). Every entry
+ * also registers its OpenCode ID -> wire ID pair for request resolution.
  *
  * `-thinking` entries carry `reasoning` and `interleaved`. Both are required:
  * `reasoning` declares the capability, and `interleaved.field` tells OpenCode
  * that reasoning arrives in the non-standard `reasoning_content` delta this
  * plugin emits (see streaming/openai-converter.ts). Without them OpenCode
  * silently drops every reasoning chunk and no thinking block is rendered.
+ * Thinking companions are emitted for effort-capable Claude models (version
+ * rule in effort.ts).
  */
-export function buildModelRegistry(): Record<string, unknown> {
+export function buildModelRegistry(wireModels: WireModel[]): Record<string, unknown> {
   const models: Record<string, unknown> = {}
 
-  for (const [modelID, spec] of Object.entries(MODEL_SPECS)) {
-    models[modelID] = {
-      name: `${spec.name} (${spec.rate})`,
-      limit: spec.limit,
-      modalities: spec.modalities
+  for (const wire of wireModels) {
+    const modelID = toOpenCodeModelId(wire.modelId)
+    const limit = {
+      context: wire.maxInputTokens ?? CONTEXT_200K.context,
+      output: wire.maxOutputTokens ?? CONTEXT_200K.output
     }
+    const modalities = modalitiesFor(wire.modelId)
+    const baseName = wire.modelName ?? wire.modelId
+    const name =
+      wire.rateMultiplier !== undefined ? `${baseName} (${wire.rateMultiplier}x)` : baseName
 
-    if (!spec.thinking) continue
+    models[modelID] = { name, limit, modalities }
+    registerModelPair(modelID, wire.modelId, limit.context)
 
-    // Effort capability is keyed on the resolved Kiro model ID, not the
-    // OpenCode-facing one (e.g. claude-opus-5 vs claude-opus-4-6).
-    const kiroModel = resolveKiroModel(modelID)
-    if (!supportsEffort(kiroModel)) continue
+    if (!supportsEffort(wire.modelId)) continue
 
-    models[`${modelID}-thinking`] = {
-      name: `${spec.name} Thinking (${spec.rate})`,
-      limit: spec.limit,
-      modalities: spec.modalities,
+    const thinkingID = `${modelID}-thinking`
+    models[thinkingID] = {
+      name: `${baseName} Thinking${wire.rateMultiplier !== undefined ? ` (${wire.rateMultiplier}x)` : ''}`,
+      limit,
+      modalities,
       reasoning: true,
       interleaved: { field: 'reasoning_content' },
-      variants: buildVariants(kiroModel)
+      variants: buildVariants(wire.modelId)
     }
+    registerModelPair(thinkingID, wire.modelId, limit.context)
   }
 
   return models

@@ -1,21 +1,15 @@
 import { describe, expect, test } from 'bun:test'
-import { isLongContextModel, normalizeRegion, SUPPORTED_MODELS } from '../constants.js'
+import { isLongContextModel, normalizeRegion } from '../constants.js'
 
 describe('isLongContextModel', () => {
-  test('returns true for all 1m model variants', () => {
-    const expected1m = SUPPORTED_MODELS.filter((k) => k.includes('-1m'))
-    expect(expected1m.length).toBeGreaterThan(0)
-    for (const model of expected1m) {
-      expect(isLongContextModel(model)).toBe(true)
-    }
+  test('returns true for -1m suffixed model variants', () => {
+    expect(isLongContextModel('claude-sonnet-4-6-1m')).toBe(true)
+    expect(isLongContextModel('claude-sonnet-5-1m-thinking')).toBe(true)
   })
 
   test('returns false for standard context models', () => {
-    const standard = SUPPORTED_MODELS.filter((k) => !k.includes('-1m'))
-    expect(standard.length).toBeGreaterThan(0)
-    for (const model of standard) {
-      expect(isLongContextModel(model)).toBe(false)
-    }
+    expect(isLongContextModel('claude-opus-4-8')).toBe(false)
+    expect(isLongContextModel('deepseek-3.2')).toBe(false)
   })
 
   test('returns false for unknown model strings', () => {

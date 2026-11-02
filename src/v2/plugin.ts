@@ -9,9 +9,11 @@ import { AccountRepository } from '../infrastructure/database/account-repository
 import { AccountManager } from '../plugin/accounts.js'
 import { loadConfig } from '../plugin/config/index.js'
 import * as logger from '../plugin/logger.js'
+import { loadCachedModels, saveCachedModels } from '../plugin/model-cache.js'
 import { KIRO_AUTH_METHOD_IDS, registerKiroAuth } from './auth.js'
 import { buildV2ModelRegistry, registerKiroCatalog } from './catalog.js'
 import { validateHostSurfaces } from './context.js'
+import { discoverAccountModels } from './discovery.js'
 import { getSharedGateway, KiroGateway, setSharedGateway, type NotifyFn } from './gateway.js'
 import type { PluginContext, PluginDefinition, Registration } from './host-types.js'
 import { registerKiroTools } from './tools.js'
@@ -97,19 +99,50 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
   }
   const ownerToken = gateway.claim(requestHandler, notify, region)
 
-  const models = buildV2ModelRegistry(KIRO_PROVIDER_ID)
+  // The catalog is generated from the account, never maintained by hand:
+  // start from the last-good cache, then background discovery (below) swaps in
+  // the live ListAvailableModels result. The catalog transform reads through
+  // getModels, so it picks the new list up on replay.
+  const catalogModels = { current: buildV2ModelRegistry(KIRO_PROVIDER_ID, loadCachedModels()) }
 
   const regs: Registration[] = []
   regs.push(
     await registerKiroCatalog(ctx, {
       providerID: KIRO_PROVIDER_ID,
       gatewayUrl: () => gateway.url(),
-      models
+      gatewayLive: () => gateway.isLive(),
+      getModels: () => catalogModels.current
     })
   )
   regs.push(await registerKiroAuth(ctx, { config, repository, accountManager }))
   regs.push(await registerKiroTools(ctx, { config, accountManager }))
   await authHandler.initialize(asToast)
+
+  // Background catalog refresh from the logged-in accounts. Never blocks
+  // setup; on failure the cached list stays (a failed list call means
+  // inference would fail too, so there is no static fallback list).
+  void (async () => {
+    try {
+      const discovered = await discoverAccountModels({ config, accountManager, repository })
+      if (!discovered || discovered.length === 0) return
+      saveCachedModels(discovered)
+      catalogModels.current = buildV2ModelRegistry(KIRO_PROVIDER_ID, discovered)
+      try {
+        await ctx.provider.reload?.()
+      } catch {
+        /* transform replay happens on catalog events anyway */
+      }
+      try {
+        await ctx.model.reload?.()
+      } catch {
+        /* transform replay happens on catalog events anyway */
+      }
+    } catch (e) {
+      logger.warn('Kiro model discovery failed; keeping cached catalog', {
+        error: e instanceof Error ? e.message : String(e)
+      })
+    }
+  })()
 
   return async () => {
     for (const r of regs) {
