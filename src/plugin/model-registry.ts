@@ -73,10 +73,18 @@ export function buildModelRegistry(wireModels: WireModel[]): Record<string, unkn
     const name =
       wire.rateMultiplier !== undefined ? `${baseName} (${wire.rateMultiplier}x)` : baseName
 
-    models[modelID] = { name, limit, modalities }
     registerModelPair(modelID, wire.modelId, limit.context)
 
-    if (!supportsEffort(wire.modelId)) continue
+    if (!supportsEffort(wire.modelId)) {
+      models[modelID] = { name, limit, modalities }
+      continue
+    }
+
+    // Effort variants live on the base model too: picking one sends
+    // thinkingConfig, which the request handler treats as thinking enabled
+    // (same signal as the -thinking twin). No variant = no thinking.
+    const variants = buildVariants(wire.modelId)
+    models[modelID] = { name, limit, modalities, variants }
 
     const thinkingID = `${modelID}-thinking`
     models[thinkingID] = {
@@ -85,7 +93,7 @@ export function buildModelRegistry(wireModels: WireModel[]): Record<string, unkn
       modalities,
       reasoning: true,
       interleaved: { field: 'reasoning_content' },
-      variants: buildVariants(wire.modelId)
+      variants
     }
     registerModelPair(thinkingID, wire.modelId, limit.context)
   }
