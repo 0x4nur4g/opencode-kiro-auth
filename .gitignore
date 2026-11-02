@@ -6,3 +6,6 @@ dist/
 .vscode/*
 .sisyphus
 *.tgz
+
+# local agent brief (kept on disk, not published)
+AGENTS.md
