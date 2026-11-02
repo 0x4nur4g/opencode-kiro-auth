@@ -1,11 +1,12 @@
 {
-  "name": "@zhafron/opencode-kiro-auth",
+  "name": "opencode-kiro-auth",
   "version": "2.0.0",
   "private": true,
   "description": "OpenCode plugin for AWS Kiro (CodeWhisperer) providing access to Claude models",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/fix-esm-imports.mjs",
     "format": "prettier --write 'src/**/*.ts'",
@@ -26,7 +27,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tickernelz/opencode-kiro-auth.git"
+    "url": "git+https://github.com/0x4nur4g/opencode-kiro-auth.git"
   },
   "dependencies": {
     "@aws/codewhisperer-streaming-client": "^1.0.34",
@@ -42,9 +43,4 @@
     "prettier-plugin-organize-imports": "^4.1.0",
     "typescript": "^5.7.3"
   },
-  "files": [
-    "dist",
-    "package.json",
-    "README.md"
-  ]
 }
