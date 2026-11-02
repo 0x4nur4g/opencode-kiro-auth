@@ -33,10 +33,19 @@ export function registerKiroCatalog(
     const baseURL = opts.gatewayUrl()
     const models = opts.getModels()
     const signature = `${baseURL}|${models.map((m) => m.id).join(',')}`
-    const existing = draft.get(opts.providerID) as
-      | { package?: unknown; settings?: { baseURL?: unknown } }
+    // Host shape (core/src/provider.ts editor.get): a ProviderRecord
+    // `{ provider, models, sourceConnection }`, NOT the Provider.Info itself.
+    // Reading .package/.settings off the record silently yields undefined and
+    // disables the update branch below — that shipped once and left the
+    // catalog pointing at a dead gateway port after rotation.
+    const record = draft.get(opts.providerID) as
+      | {
+          provider?: { package?: unknown; settings?: { baseURL?: unknown } }
+          package?: unknown
+          settings?: { baseURL?: unknown }
+        }
       | undefined
-    if (!existing) {
+    if (!record) {
       draft.add({
         info: {
           id: opts.providerID,
@@ -50,6 +59,7 @@ export function registerKiroCatalog(
       appliedSignature = signature
       return
     }
+    const existing = record.provider ?? record
     if (existing.package !== '@opencode/ai/providers/openai-compatible') return
     // Only ever repoint a loopback URL: that is this plugin's gateway shape.
     // A non-loopback baseURL means a user-owned provider block; leave it alone.
