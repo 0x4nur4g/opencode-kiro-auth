@@ -1,5 +1,11 @@
 import type { WireModel } from './available-models.js'
-import { EFFORT_LEVELS, supportsEffort, supportsXHighEffort, THINKING_BUDGETS } from './effort.js'
+import {
+  EFFORT_LEVELS,
+  effortCapability,
+  registerEffortCapability,
+  supportsEffort,
+  THINKING_BUDGETS
+} from './effort.js'
 import { registerModelPair } from './models.js'
 
 type Modalities = {
@@ -32,14 +38,15 @@ function modalitiesFor(wireId: string): Modalities {
 /**
  * Build the thinking variants a model supports.
  *
- * Levels come from the model's own effort capabilities, so xhigh only appears on
- * models that accept it and the budgets stay in step with budgetToEffort.
+ * Levels come from the model's own effort enum (effort.ts), so each variant is
+ * one Kiro accepts and the budgets stay in step with budgetToEffort.
  */
 function buildVariants(kiroModel: string): Record<string, unknown> {
   const variants: Record<string, unknown> = {}
+  const levels = effortCapability(kiroModel)?.levels ?? []
 
   for (const level of EFFORT_LEVELS) {
-    if (level === 'xhigh' && !supportsXHighEffort(kiroModel)) continue
+    if (!levels.includes(level)) continue
     variants[level] = { thinkingConfig: { thinkingBudget: THINKING_BUDGETS[level] } }
   }
 
@@ -56,8 +63,9 @@ function buildVariants(kiroModel: string): Record<string, unknown> {
  * that reasoning arrives in the non-standard `reasoning_content` delta this
  * plugin emits (see streaming/openai-converter.ts). Without them OpenCode
  * silently drops every reasoning chunk and no thinking block is rendered.
- * Thinking companions are emitted for effort-capable Claude models (version
- * rule in effort.ts).
+ * Thinking companions are emitted for effort-capable Claude models; other
+ * families with an effort field (GPT, Grok) get the variants on the base model
+ * only, since the companion's thinking prompt is a Claude convention.
  */
 export function buildModelRegistry(wireModels: WireModel[]): Record<string, unknown> {
   const models: Record<string, unknown> = {}
@@ -74,6 +82,7 @@ export function buildModelRegistry(wireModels: WireModel[]): Record<string, unkn
       wire.rateMultiplier !== undefined ? `${baseName} (${wire.rateMultiplier}x)` : baseName
 
     registerModelPair(modelID, wire.modelId, limit.context)
+    registerEffortCapability(wire.modelId, wire.effort)
 
     if (!supportsEffort(wire.modelId)) {
       models[modelID] = { name, limit, modalities }
@@ -85,6 +94,7 @@ export function buildModelRegistry(wireModels: WireModel[]): Record<string, unkn
     // (same signal as the -thinking twin). No variant = no thinking.
     const variants = buildVariants(wire.modelId)
     models[modelID] = { name, limit, modalities, variants }
+    if (!wire.modelId.startsWith('claude-')) continue
 
     const thinkingID = `${modelID}-thinking`
     models[thinkingID] = {

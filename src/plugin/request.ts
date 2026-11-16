@@ -18,7 +18,7 @@ import {
   createToolNameRegistry,
   deduplicateToolResults
 } from '../infrastructure/transformers/tool-transformer.js'
-import { getEffectiveEffort } from './effort.js'
+import { effortCapability, getEffectiveEffort } from './effort.js'
 import {
   convertImagesToKiroFormat,
   extractAllImages,
@@ -68,7 +68,9 @@ function buildCodeWhispererRequest(
     const extractedSystem = systemMsgs.map((m: any) => getContentText(m)).join('\n\n')
     sys = sys ? `${sys}\n\n${extractedSystem}` : extractedSystem
   }
-  if (think) {
+  // The thinking prompt is a Claude convention; other families take effort
+  // through their own request field only.
+  if (think && resolved.startsWith('claude-')) {
     const pfx = `<thinking_mode>enabled</thinking_mode><max_thinking_length>${budget}</max_thinking_length>`
     sys = sys.includes('<thinking_mode>') ? sys : sys ? `${pfx}\n${sys}` : pfx
   }
@@ -376,6 +378,7 @@ export function transformToSdkRequest(
     conversationId: convId,
     region: extractRegionFromArn(auth.profileArn) ?? auth.region,
     toolNameMap,
-    effort
+    effort,
+    effortField: effort ? effortCapability(resolved)?.field : undefined
   }
 }

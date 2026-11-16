@@ -1,4 +1,5 @@
 import { extractRegionFromArn } from '../constants'
+import { type EffortCapability, effortCapabilityFromSchema } from './effort'
 import type { KiroAuthDetails } from './types'
 
 /**
@@ -12,6 +13,11 @@ export interface WireModel {
   maxInputTokens?: number
   maxOutputTokens?: number
   rateMultiplier?: number
+  /**
+   * Effort control read from `additionalModelRequestFieldsSchema`; null when
+   * the model takes none. Absent in lists cached before the plugin read it.
+   */
+  effort?: EffortCapability | null
 }
 
 /**
@@ -174,7 +180,8 @@ function parseModels(data: any): WireModel[] {
       modelName: typeof e.modelName === 'string' ? e.modelName : undefined,
       maxInputTokens: numberOf(limits.maxInputTokens),
       maxOutputTokens: numberOf(limits.maxOutputTokens),
-      rateMultiplier: numberOf(e.rateMultiplier)
+      rateMultiplier: numberOf(e.rateMultiplier),
+      effort: effortCapabilityFromSchema(e.additionalModelRequestFieldsSchema)
     })
   }
   return models

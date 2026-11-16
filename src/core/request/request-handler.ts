@@ -1,7 +1,9 @@
 import { GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client'
 import type { AccountRepository } from '../../infrastructure/database/account-repository'
 import type { AccountManager } from '../../plugin/accounts'
+import { kiroIdeVersion, refreshKiroIdeVersion } from '../../plugin/client-version'
 import type { KiroConfig } from '../../plugin/config'
+import { disableEffort } from '../../plugin/effort'
 import { isPermanentError } from '../../plugin/health'
 import * as logger from '../../plugin/logger'
 import { resolveProfileArn } from '../../plugin/profile-arn'
@@ -91,6 +93,7 @@ export class RequestHandler {
     let retry = 0
     let bearerRetried = false
     let profileArnRetried = false
+    let versionRetried = false
     let consecutiveNullAccounts = 0
     const retryContext = this.retryStrategy.createContext()
 
@@ -152,7 +155,7 @@ export class RequestHandler {
         this.logSdkRequest(sdkPrep, acc, apiTimestamp)
       }
       try {
-        const client = createSdkClient(auth, sdkPrep.region, sdkPrep.effort)
+        const client = createSdkClient(auth, sdkPrep.region, sdkPrep.effort, sdkPrep.effortField)
         const command = new GenerateAssistantResponseCommand({
           conversationState: sdkPrep.conversationState as any,
           profileArn: sdkPrep.profileArn
@@ -179,6 +182,30 @@ export class RequestHandler {
 
         if (httpStatus && apiTimestamp) {
           this.logSdkError(sdkPrep, e, acc, apiTimestamp)
+        }
+
+        // Kiro validates additionalModelRequestFields against the schema each
+        // model advertises. If it still rejects the effort, drop effort for
+        // the model and resend: the turn runs at Kiro's default effort
+        // instead of failing.
+        if (
+          httpStatus === 400 &&
+          sdkPrep.effort &&
+          /additionalModelRequestFields/i.test(e?.message || '')
+        ) {
+          disableEffort(sdkPrep.effectiveModel)
+          logger.warn(`Kiro rejected effort for ${sdkPrep.effectiveModel}; resending without it`, {
+            error: e?.message
+          })
+          continue
+        }
+
+        // The client-version gate moved: adopt the current Kiro release now
+        // instead of at the next daily refresh, then resend once.
+        if (httpStatus === 400 && !versionRetried && /no longer supported/i.test(e?.message || '')) {
+          versionRetried = true
+          const previous = kiroIdeVersion()
+          if ((await refreshKiroIdeVersion()) !== previous) continue
         }
 
         if (
@@ -307,7 +334,7 @@ export class RequestHandler {
   private logSdkRequest(prep: SdkPreparedRequest, acc: ManagedAccount, timestamp: string): void {
     // Mirrors what the sdk-client middleware injects, so logs reflect the wire body.
     const additionalModelRequestFields = prep.effort
-      ? { output_config: { effort: prep.effort } }
+      ? { [prep.effortField ?? 'output_config']: { effort: prep.effort } }
       : undefined
 
     logger.logApiRequest(

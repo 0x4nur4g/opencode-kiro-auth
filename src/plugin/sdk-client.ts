@@ -22,9 +22,11 @@ const KIRO_CLI_MAX_ATTEMPTS = 3
 export function createSdkClient(
   auth: KiroAuthDetails,
   region: string,
-  effort?: Effort
+  effort?: Effort,
+  effortField = 'output_config'
 ): CodeWhispererStreamingClient {
-  const cacheKey = `${region}:${auth.email || 'default'}:${effort || 'none'}:${kiroUserAgent()}`
+  const effortKey = effort ? `${effortField}.${effort}` : 'none'
+  const cacheKey = `${region}:${auth.email || 'default'}:${effortKey}:${kiroUserAgent()}`
   const cached = clientCache.get(cacheKey)
 
   if (cached && cached.token === auth.access && cached.effort === effort) {
@@ -51,7 +53,8 @@ export function createSdkClient(
     { step: 'build', name: 'addKiroHeaders' }
   )
 
-  // Inject additionalModelRequestFields for effort-based thinking control
+  // Inject additionalModelRequestFields for effort-based thinking control, in
+  // the field the model's advertised schema names (output_config, reasoning)
   if (effort) {
     client.middlewareStack.add(
       (next: any) => async (args: any) => {
@@ -61,7 +64,7 @@ export function createSdkClient(
           try {
             const body = JSON.parse(args.request.body)
             body.additionalModelRequestFields = {
-              output_config: {
+              [effortField]: {
                 effort
               }
             }

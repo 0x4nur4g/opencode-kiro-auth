@@ -23,63 +23,125 @@ export const THINKING_BUDGETS: Readonly<Record<Effort, number>> = {
 }
 
 /**
- * Effort capability by Claude version rule, not a maintained model list
- * (the catalog itself is generated per account; new releases must not need a
- * plugin edit to light up):
- *
- * - 4-value effort enum (low/medium/high/max): Opus and Sonnet from 4.5 on.
- * - 5-value enum (adds xhigh): Opus from 4.7 on, Sonnet from 5 on.
- *   xhigh requests elsewhere are clamped to max.
- *
- * Haiku and non-Claude models take no effort parameter.
+ * How a model takes an effort setting: the top-level request field that
+ * carries `effort` (Claude: `output_config`; GPT, Grok: `reasoning`) and the
+ * levels its enum allows.
+ */
+export interface EffortCapability {
+  field: string
+  levels: Effort[]
+}
+
+/**
+ * Read effort control from a model's `additionalModelRequestFieldsSchema`, as
+ * ListAvailableModels advertises it per model. Kiro validates request bodies
+ * against this schema (unknown fields and out-of-enum levels are 400s; models
+ * without a schema reject the field outright), so it is the authority: new
+ * models and families light up without a plugin edit. Null = no effort field.
+ */
+export function effortCapabilityFromSchema(schema: unknown): EffortCapability | null {
+  const properties = (schema as { properties?: unknown } | null)?.properties
+  if (!properties || typeof properties !== 'object') return null
+  for (const [field, spec] of Object.entries(properties)) {
+    const values = (spec as any)?.properties?.effort?.enum
+    if (!Array.isArray(values)) continue
+    const levels = EFFORT_LEVELS.filter((level) => values.includes(level))
+    if (levels.length > 0) return { field, levels }
+  }
+  return null
+}
+
+const advertised = new Map<string, EffortCapability | null>()
+
+/**
+ * Record what the account's model list says about a model. `undefined` (a
+ * model list cached before the plugin read the schema) leaves the version
+ * rule below in charge.
+ */
+export function registerEffortCapability(kiroModel: string, capability: unknown): void {
+  if (capability === undefined) return
+  const c = capability as Partial<EffortCapability> | null
+  const raw = c?.levels
+  const levels = Array.isArray(raw) ? EFFORT_LEVELS.filter((level) => raw.includes(level)) : []
+  advertised.set(
+    kiroModel,
+    typeof c?.field === 'string' && levels.length > 0 ? { field: c.field, levels } : null
+  )
+}
+
+/**
+ * Stop sending effort to a model after Kiro rejected the field anyway; the
+ * next catalog build re-reads the advertised schema.
+ */
+export function disableEffort(kiroModel: string): void {
+  advertised.set(kiroModel, null)
+}
+
+/**
+ * Fallback for model lists cached before the plugin read the schema: the
+ * Claude version rule the plugin used before (Opus and Sonnet from 4.5, Haiku
+ * from 5; xhigh on Opus from 4.7 and on everything else from 5).
  */
 function parseClaudeVersion(
   kiroModel: string
-): { family: 'opus' | 'sonnet'; major: number; minor: number } | undefined {
-  const match = /^claude-(opus|sonnet)-(\d+)(?:\.(\d+))?/.exec(kiroModel)
+): { family: 'opus' | 'sonnet' | 'haiku'; major: number; minor: number } | undefined {
+  const match = /^claude-(opus|sonnet|haiku)-(\d+)(?:\.(\d+))?/.exec(kiroModel)
   if (!match) return undefined
   return {
-    family: match[1] as 'opus' | 'sonnet',
+    family: match[1] as 'opus' | 'sonnet' | 'haiku',
     major: Number(match[2]),
     minor: match[3] ? Number(match[3]) : 0
   }
+}
+
+function versionRuleCapability(kiroModel: string): EffortCapability | null {
+  const v = parseClaudeVersion(kiroModel)
+  if (!v) return null
+  const supported =
+    v.family === 'haiku' ? v.major >= 5 : v.major > 4 || (v.major === 4 && v.minor >= 5)
+  if (!supported) return null
+  const xhigh = v.family === 'opus' ? v.major > 4 || (v.major === 4 && v.minor >= 7) : v.major >= 5
+  return { field: 'output_config', levels: EFFORT_LEVELS.filter((l) => xhigh || l !== 'xhigh') }
+}
+
+/** Effort control for a model: the advertised schema, else the version rule. */
+export function effortCapability(kiroModel: string): EffortCapability | null {
+  return advertised.has(kiroModel)
+    ? (advertised.get(kiroModel) ?? null)
+    : versionRuleCapability(kiroModel)
 }
 
 /**
  * Check if a model supports the effort parameter.
  */
 export function supportsEffort(kiroModel: string): boolean {
-  const v = parseClaudeVersion(kiroModel)
-  if (!v) return false
-  return v.major > 4 || (v.major === 4 && v.minor >= 5)
+  return effortCapability(kiroModel) !== null
 }
 
 /**
  * Check if a model supports xhigh effort level.
  */
 export function supportsXHighEffort(kiroModel: string): boolean {
-  const v = parseClaudeVersion(kiroModel)
-  if (!v) return false
-  if (v.family === 'opus') return v.major > 4 || (v.major === 4 && v.minor >= 7)
-  return v.major >= 5
+  return effortCapability(kiroModel)?.levels.includes('xhigh') ?? false
 }
 
 /**
  * Resolve effort level for a given model.
  * - Returns undefined if model doesn't support effort
- * - Clamps xhigh to max for models that don't support it
+ * - Otherwise the nearest level the model accepts, preferring the next one up
+ *   (xhigh -> max where xhigh is missing, max -> xhigh where max is missing)
  */
 export function resolveEffort(kiroModel: string, requested: Effort): Effort | undefined {
-  if (!supportsEffort(kiroModel)) {
-    return undefined
-  }
-
-  // xhigh is only supported on the models in XHIGH_CAPABLE_MODELS
-  if (requested === 'xhigh' && !supportsXHighEffort(kiroModel)) {
-    return 'max'
-  }
-
-  return requested
+  const levels = effortCapability(kiroModel)?.levels
+  if (!levels) return undefined
+  if (levels.includes(requested)) return requested
+  const index = EFFORT_LEVELS.indexOf(requested)
+  return (
+    EFFORT_LEVELS.slice(index + 1).find((level) => levels.includes(level)) ??
+    EFFORT_LEVELS.slice(0, index)
+      .reverse()
+      .find((level) => levels.includes(level))
+  )
 }
 
 /**

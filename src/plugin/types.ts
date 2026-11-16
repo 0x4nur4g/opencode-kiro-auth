@@ -126,6 +126,8 @@ export interface SdkPreparedRequest {
   toolNameMap?: ToolNameMap
   /** Resolved effort level for thinking models */
   effort?: Effort
+  /** Request field that carries the effort, per the model's advertised schema */
+  effortField?: string
 }
 
 export type AccountSelectionStrategy = 'sticky' | 'round-robin' | 'lowest-usage'
