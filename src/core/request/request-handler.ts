@@ -4,6 +4,7 @@ import type { AccountManager } from '../../plugin/accounts'
 import type { KiroConfig } from '../../plugin/config'
 import { isPermanentError } from '../../plugin/health'
 import * as logger from '../../plugin/logger'
+import { resolveProfileArn } from '../../plugin/profile-arn'
 import { transformToSdkRequest } from '../../plugin/request'
 import { createSdkClient } from '../../plugin/sdk-client'
 import { syncFromKiroCli } from '../../plugin/sync/kiro-cli'
@@ -89,6 +90,7 @@ export class RequestHandler {
 
     let retry = 0
     let bearerRetried = false
+    let profileArnRetried = false
     let consecutiveNullAccounts = 0
     const retryContext = this.retryStrategy.createContext()
 
@@ -132,6 +134,17 @@ export class RequestHandler {
         continue
       }
 
+      // Current Kiro endpoints require a profileArn for account types that
+      // used to be served without one; imported accounts may not carry it.
+      if (!auth.profileArn) {
+        const profileArn = await resolveProfileArn(auth)
+        if (profileArn) {
+          auth.profileArn = profileArn
+          acc.profileArn = profileArn
+          this.repository.save(acc).catch(() => {})
+        }
+      }
+
       const sdkPrep = this.prepareSdkRequest(init?.body, model, auth, think, budget, showToast)
 
       const apiTimestamp = this.config.enable_log_api_request ? logger.getTimestamp() : null
@@ -166,6 +179,21 @@ export class RequestHandler {
 
         if (httpStatus && apiTimestamp) {
           this.logSdkError(sdkPrep, e, acc, apiTimestamp)
+        }
+
+        if (
+          httpStatus === 400 &&
+          !profileArnRetried &&
+          /profileArn|improperly formed request/i.test(e?.message || '')
+        ) {
+          profileArnRetried = true
+          const profileArn = await resolveProfileArn(auth)
+          if (profileArn) {
+            auth.profileArn = profileArn
+            acc.profileArn = profileArn
+            this.repository.save(acc).catch(() => {})
+            continue
+          }
         }
 
         if (httpStatus === 403 && !bearerRetried) {

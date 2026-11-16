@@ -8,6 +8,7 @@ import { AccountCache } from '../infrastructure/database/account-cache.js'
 import { AccountRepository } from '../infrastructure/database/account-repository.js'
 import { AccountManager } from '../plugin/accounts.js'
 import { loadConfig } from '../plugin/config/index.js'
+import { refreshKiroIdeVersion } from '../plugin/client-version.js'
 import * as logger from '../plugin/logger.js'
 import { loadCachedModels, saveCachedModels } from '../plugin/model-cache.js'
 import { KIRO_AUTH_METHOD_IDS, registerKiroAuth } from './auth.js'
@@ -51,6 +52,10 @@ export function asToast(message: string, variant: string): void {
 
 export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
   validateHostSurfaces(ctx)
+
+  // Client identity version for Kiro's version gate. Never blocks setup: the
+  // cached/seed version is used until the metadata fetch lands.
+  void refreshKiroIdeVersion()
 
   const config = loadConfig(ctx.location.directory)
   const notify = makeNotifier()

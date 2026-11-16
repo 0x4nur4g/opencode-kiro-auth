@@ -35,6 +35,14 @@ export function extractRegionFromArn(arn: string | undefined): KiroRegion | unde
   return isValidRegion(region) ? (region as KiroRegion) : undefined
 }
 
+/**
+ * Kiro IDE release the client identifies as. Kiro's client-version gate
+ * (live since 2026-11-09) rejects a bare `KiroIDE` product token with
+ * HTTP 400 "This version of Kiro is no longer supported". Bump this when the
+ * gate moves; source: https://prod.download.desktop.kiro.dev/stable/metadata-linux-x64-stable.json
+ */
+export const KIRO_IDE_VERSION = '1.4.178'
+
 export const KIRO_CONSTANTS = {
   REFRESH_URL: 'https://prod.{{region}}.auth.desktop.kiro.dev/refreshToken',
   REFRESH_IDC_URL: 'https://oidc.{{region}}.amazonaws.com/token',
@@ -42,7 +50,6 @@ export const KIRO_CONSTANTS = {
   USAGE_LIMITS_URL: 'https://q.{{region}}.amazonaws.com/getUsageLimits',
   DEFAULT_REGION: 'us-east-1' as KiroRegion,
   AXIOS_TIMEOUT: 120000,
-  USER_AGENT: 'KiroIDE',
   SDK_VERSION: '3.738.0',
   SDK_VERSION_USAGE: '3.0.0',
   CHAT_TRIGGER_TYPE_MANUAL: 'MANUAL',

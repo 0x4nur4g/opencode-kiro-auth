@@ -1,3 +1,4 @@
+import { kiroUserAgent } from './client-version'
 import { decodeRefreshToken, encodeRefreshToken } from '../kiro/auth'
 import { KiroTokenRefreshError } from './errors'
 import type { KiroAuthDetails, RefreshParts } from './types'
@@ -26,7 +27,7 @@ export async function refreshAccessToken(auth: KiroAuthDetails): Promise<KiroAut
       }
 
   const ua = isIdc
-    ? 'aws-sdk-js/3.738.0 ua/2.1 os/other lang/js md/browser#unknown_unknown api/sso-oidc#3.738.0 m/E KiroIDE'
+    ? `aws-sdk-js/3.738.0 ua/2.1 os/other lang/js md/browser#unknown_unknown api/sso-oidc#3.738.0 m/E ${kiroUserAgent()}`
     : 'aws-sdk-js/3.0.0 KiroIDE-0.1.0 os/macos lang/js md/nodejs/18.0.0'
 
   try {

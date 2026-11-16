@@ -1,5 +1,9 @@
 import { CodeWhispererStreamingClient } from '@aws/codewhisperer-streaming-client'
-import { KIRO_CONSTANTS } from '../constants.js'
+import {
+  kiroUserAgent,
+  kiroVersionNeedsRefresh,
+  refreshKiroIdeVersion
+} from './client-version'
 import type { Effort, KiroAuthDetails } from './types'
 
 /**
@@ -20,7 +24,7 @@ export function createSdkClient(
   region: string,
   effort?: Effort
 ): CodeWhispererStreamingClient {
-  const cacheKey = `${region}:${auth.email || 'default'}:${effort || 'none'}`
+  const cacheKey = `${region}:${auth.email || 'default'}:${effort || 'none'}:${kiroUserAgent()}`
   const cached = clientCache.get(cacheKey)
 
   if (cached && cached.token === auth.access && cached.effort === effort) {
@@ -28,13 +32,14 @@ export function createSdkClient(
   }
 
   const token = auth.access
+  if (kiroVersionNeedsRefresh()) void refreshKiroIdeVersion()
   const client = new CodeWhispererStreamingClient({
     region,
     endpoint: `https://q.${region}.amazonaws.com`,
     token: () => Promise.resolve({ token }),
     maxAttempts: KIRO_CLI_MAX_ATTEMPTS,
     retryMode: 'standard',
-    customUserAgent: [[KIRO_CONSTANTS.USER_AGENT]]
+    customUserAgent: [[kiroUserAgent()]]
   })
 
   // Add Kiro-specific headers

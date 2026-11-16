@@ -90,7 +90,7 @@ function managementHeaders(auth: KiroAuthDetails, target: string): Record<string
   return headers
 }
 
-async function managementCall(
+export async function managementCall(
   auth: KiroAuthDetails,
   region: string,
   target: string,
