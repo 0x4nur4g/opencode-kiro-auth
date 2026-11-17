@@ -138,8 +138,13 @@ export class IdcAuthMethod {
               )
             }
             const errMsg = e instanceof Error ? e.message : String(e)
-            if (errMsg.includes('FEATURE_NOT_SUPPORTED')) {
-              logger.warn('fetchUsageLimits returned FEATURE_NOT_SUPPORTED; skipping usage check', {
+            // Profiles without usage limits fail getUsageLimits with either code. The token
+            // is already valid, so the optional usage check must not abort the login.
+            const unsupported = ['FEATURE_NOT_SUPPORTED', 'REQUEST_BODY_INVALID'].find((reason) =>
+              errMsg.includes(reason)
+            )
+            if (unsupported) {
+              logger.warn(`fetchUsageLimits returned ${unsupported}; skipping usage check`, {
                 serviceRegion,
                 profileArn
               })
