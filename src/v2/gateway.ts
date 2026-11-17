@@ -57,6 +57,11 @@ export class KiroGateway {
     this.server = Bun.serve({
       hostname: '127.0.0.1',
       port: 0,
+      // Bun closes a connection after 10 s without bytes by default. A long
+      // thinking phase or a large tool call can stream nothing for longer, and
+      // the host then reports ECONNRESET mid-response. The host applies its own
+      // header and chunk timeouts, so the loopback listener sets none.
+      idleTimeout: 0,
       fetch: (request) => this.dispatch(request)
     })
     this.port = this.server.port ?? 0
