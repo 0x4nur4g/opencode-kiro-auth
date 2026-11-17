@@ -1,14 +1,26 @@
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { RequestHandler } from '../core/request/request-handler.js'
 
 export type NotifyFn = (message: string, variant: 'info' | 'success' | 'warn' | 'error') => void
 
 /**
- * Revision of the listener's server options. A shared listener outlives module
- * re-evaluation with the options of the code that created it, so setup
- * replaces one whose revision differs. Bump on any `Bun.serve` option change.
+ * Revision of the listener's server options and request handling. A shared
+ * listener outlives module re-evaluation with the options and `dispatch` of
+ * the code that created it, so setup replaces one whose revision differs.
+ * Bump on any `Bun.serve` option change or request-handling change.
  * 2: idleTimeout 0.
+ * 3: gateway key + Host check (older listeners answer any local caller).
  */
-export const GATEWAY_REVISION = 2
+export const GATEWAY_REVISION = 3
+
+/**
+ * Second carrier for the gateway key, next to `Authorization: Bearer`. The
+ * host replaces a model's `settings.apiKey` with the stored `kiro` integration
+ * credential (the Kiro access token after `opencode auth login`), so the Bearer
+ * alone would lock those users out; model `headers` reach the wire unchanged
+ * (host v2.3.0 `model-resolver.ts` loadCatalogPackage).
+ */
+export const GATEWAY_KEY_HEADER = 'x-kiro-gateway-key'
 
 /**
  * Loopback OpenAI-compatible endpoint fronting the Kiro request pipeline.
@@ -104,6 +116,15 @@ export class KiroGateway {
   }
 
   private async dispatch(request: Request): Promise<Response> {
+    // Both checks run before the body is read or the handler is reached. The
+    // exact loopback Host defeats DNS rebinding; the key keeps other local
+    // processes and web pages from driving the Kiro accounts.
+    if (request.headers.get('host') !== `127.0.0.1:${this.port}`) {
+      return errorResponse(403, 'Kiro gateway: unexpected Host header')
+    }
+    if (!hasGatewayKey(request)) {
+      return errorResponse(401, 'Kiro gateway: missing or invalid gateway key')
+    }
     const path = new URL(request.url).pathname
     if (request.method === 'POST' && path === '/chat/completions') {
       const body = await request.text()
@@ -191,6 +212,24 @@ function errorResponse(status: number, message: string): Response {
 }
 
 /**
+ * True when the request carries the process gateway key, as the Bearer token
+ * or in GATEWAY_KEY_HEADER.
+ */
+function hasGatewayKey(request: Request): boolean {
+  const key = gatewayKey()
+  const authorization = request.headers.get('authorization')
+  if (authorization !== null && sameSecret(authorization, `Bearer ${key}`)) return true
+  const header = request.headers.get(GATEWAY_KEY_HEADER)
+  return header !== null && sameSecret(header, key)
+}
+
+/** Constant-time compare. Hashing first gives timingSafeEqual equal lengths. */
+function sameSecret(candidate: string, secret: string): boolean {
+  const digest = (value: string) => createHash('sha256').update(value).digest()
+  return timingSafeEqual(digest(candidate), digest(secret))
+}
+
+/**
  * Shared-listener guard: a duplicated `setup` run reuses the same listener
  * instead of binding a second loopback port.
  *
@@ -216,4 +255,21 @@ export function getSharedGateway(): KiroGateway | undefined {
 
 export function setSharedGateway(gateway: KiroGateway | undefined): void {
   gatewayAnchor()[SHARED_GATEWAY_KEY] = gateway
+}
+
+/**
+ * Per-process gateway key: model records carry it, the gateway requires it.
+ * Anchored on the process global like the shared gateway, so re-evaluated
+ * module instances and rotated listeners keep the key the catalog already
+ * carries. Never log it.
+ */
+const GATEWAY_KEY_ANCHOR = Symbol.for('kiro-auth-v2.gatewayKey')
+
+export function gatewayKey(): string {
+  const anchor = globalThis as unknown as Record<symbol, string | undefined>
+  const existing = anchor[GATEWAY_KEY_ANCHOR]
+  if (typeof existing === 'string' && existing.length > 0) return existing
+  const key = randomBytes(32).toString('base64url')
+  anchor[GATEWAY_KEY_ANCHOR] = key
+  return key
 }

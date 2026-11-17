@@ -1,5 +1,6 @@
 import type { WireModel } from '../plugin/available-models.js'
 import { buildModelRegistry } from '../plugin/model-registry.js'
+import { GATEWAY_KEY_HEADER } from './gateway.js'
 import type { ModelInfoDraft, PluginContext, Registration } from './host-types.js'
 
 /**
@@ -14,6 +15,10 @@ import type { ModelInfoDraft, PluginContext, Registration } from './host-types.j
  *   while the real gateway listens elsewhere. A dead gateway writes nothing.
  * - The gateway rotates to a new port on host reload. An existing provider
  *   record must be updated to the live URL, not left pointing at the old port.
+ * - The gateway requires the per-process key. Every model written here comes
+ *   from `buildV2ModelRegistry`, which stamps that key, so the add and the
+ *   URL-healing paths both carry it; each run's first write replaces the whole
+ *   model list, including records an older run stamped with a placeholder key.
  *
  * If the provider ID already exists with a different package (user config,
  * another plugin) it is left untouched, so the user's own provider block wins.
@@ -79,12 +84,16 @@ export function registerKiroCatalog(
  *
  * V1 entries are `Record<string, unknown>` at the type level, so every field is
  * read defensively; anything non-JSON in a variant body is stripped by a
- * JSON round-trip. `settings.apiKey` is a non-secret placeholder required by the
- * openai-compatible factory — never a credential.
+ * JSON round-trip. Each record carries the per-process gateway key twice:
+ * `settings.apiKey` (sent as `Authorization: Bearer`) and GATEWAY_KEY_HEADER
+ * (still sent when the host swaps `apiKey` for a stored Kiro credential).
+ * Records are built once per catalog change, not per transform replay, so the
+ * host keeps reusing the same model objects across rebuilds.
  */
 export function buildV2ModelRegistry(
   providerID: string,
-  wireModels: WireModel[]
+  wireModels: WireModel[],
+  gatewayKey: string
 ): Array<ModelInfoDraft> {
   const registry = buildModelRegistry(wireModels)
   const models: Array<ModelInfoDraft> = []
@@ -118,7 +127,8 @@ export function buildV2ModelRegistry(
       variants: toVariants(spec.variants),
       time: { released: 0 },
       cost: [],
-      settings: { apiKey: 'kiro-gateway' }
+      settings: { apiKey: gatewayKey },
+      headers: { [GATEWAY_KEY_HEADER]: gatewayKey }
     }
 
     // V2 spells the V1 `interleaved.field` as `compatibility.reasoningField`;

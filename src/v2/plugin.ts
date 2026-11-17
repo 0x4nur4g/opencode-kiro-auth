@@ -17,6 +17,7 @@ import { validateHostSurfaces } from './context.js'
 import { discoverAccountModels } from './discovery.js'
 import {
   GATEWAY_REVISION,
+  gatewayKey,
   getSharedGateway,
   KiroGateway,
   setSharedGateway,
@@ -123,7 +124,9 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
   // start from the last-good cache, then background discovery (below) swaps in
   // the live ListAvailableModels result. The catalog transform reads through
   // getModels, so it picks the new list up on replay.
-  const catalogModels = { current: buildV2ModelRegistry(KIRO_PROVIDER_ID, loadCachedModels()) }
+  const catalogModels = {
+    current: buildV2ModelRegistry(KIRO_PROVIDER_ID, loadCachedModels(), gatewayKey())
+  }
 
   const regs: Registration[] = []
   regs.push(
@@ -146,7 +149,7 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
       const discovered = await discoverAccountModels({ config, accountManager, repository })
       if (!discovered || discovered.length === 0) return
       saveCachedModels(discovered)
-      catalogModels.current = buildV2ModelRegistry(KIRO_PROVIDER_ID, discovered)
+      catalogModels.current = buildV2ModelRegistry(KIRO_PROVIDER_ID, discovered, gatewayKey())
       try {
         await ctx.provider.reload?.()
       } catch {

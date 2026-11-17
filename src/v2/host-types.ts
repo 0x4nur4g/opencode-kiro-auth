@@ -109,6 +109,7 @@ export interface ModelInfoDraft {
   time?: { released: number }
   cost?: Array<Record<string, unknown>>
   settings?: Record<string, unknown>
+  headers?: Record<string, string>
   package?: string
   family?: string
   /**

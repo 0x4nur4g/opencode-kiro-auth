@@ -35,9 +35,12 @@ request shape. So the plugin runs a **loopback gateway**:
 
 - `setup` starts an HTTP server bound to `127.0.0.1` on an ephemeral port.
 - The `kiro` provider is registered against `@opencode/ai/providers/openai-compatible`
-  with `baseURL = http://127.0.0.1:<port>` and a sentinel `apiKey` (`kiro-gateway`).
+  with `baseURL = http://127.0.0.1:<port>`. Each model carries a random per-process
+  gateway key as `apiKey` and in an `x-kiro-gateway-key` header.
 - OpenCode sends OpenAI-shaped `POST /chat/completions` requests; the gateway hands
-  them to the upstream `RequestHandler`, which signs and streams from Kiro.
+  them to the upstream `RequestHandler`, which signs and streams from Kiro. Requests
+  without the key (401) or with a `Host` other than `127.0.0.1:<port>` (403) are
+  refused before the body is read.
 - Kiro's `reasoningContentEvent` / tool-call events are translated back into OpenAI
   streaming chunks, and a final `finish_reason: "stop"` chunk always terminates the
   stream.
@@ -275,8 +278,9 @@ non-zero on any FAIL.
 
 - Host toasts are unavailable on the 2.x plugin surface; notifications go to the
   plugin log and assistant messages.
-- The loopback gateway binds an ephemeral port on `127.0.0.1`; the sentinel `apiKey`
-  (`kiro-gateway`) is a placeholder, not a secret, and the port stays local.
+- The loopback gateway binds an ephemeral port on `127.0.0.1` and only answers
+  requests that carry the per-process gateway key and the exact loopback `Host`.
+  The plugin makes a new key for every OpenCode process and does not store it.
 - Only two OAuth integration methods are registered (Builder ID/IDC and IDC with
   Profile ARN); Kiro CLI sessions are imported through sync rather than a third
   method.
