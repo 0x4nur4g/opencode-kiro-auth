@@ -15,6 +15,8 @@
  *   3 variant levels match the effort schema in kiro-models.json
  *   4 real completions carry the effort on the wire (plugin request log)
  *   5 the gateway keeps an idle connection open past Bun's 10 s default
+ *   8 the gateway refuses callers without the per-process key (401) or with
+ *     a Host other than 127.0.0.1:<port> (403)
  *   7 a forced gateway rotation: the old listener stops, a new one starts on
  *     another port, the catalog heals a stale record to it, and a completion
  *     works afterwards
@@ -71,6 +73,8 @@ const AFTER_ROTATION = { id: '7d', model: 'claude-haiku-5-5', variant: 'high' }
 const IDLE_HOLD_MS = 13_000
 /** The poisoned provider URL of the original heal bug. */
 const STALE_URL = 'http://127.0.0.1:0'
+/** Header the catalog stamps with the per-process gateway key (src/v2/gateway.ts). */
+const GATEWAY_KEY_HEADER = 'x-kiro-gateway-key'
 /** Fixture plugin for check 7: a stale plugin-owned kiro record ahead of kiro's transform. */
 const STALE_FIXTURE = `// live-probe fixture: a stale plugin-owned kiro provider record.
 export default {
@@ -115,6 +119,7 @@ interface Model {
   id: string
   providerID: string
   settings?: { baseURL?: unknown }
+  headers?: Record<string, unknown>
   variants?: Variant[]
 }
 interface WireModel {
@@ -240,7 +245,10 @@ async function main(): Promise<void> {
   // discovery and the completions.
   const port = await waitForGatewayPort()
   if (port) live.ports.add(port)
-  const idle = port ? idleHold(port) : Promise.resolve({ open: false, detail: 'no gateway port' })
+  const key = port ? await gatewayKeyFromCatalog() : undefined
+  const idle = port
+    ? idleHold(port, key)
+    : Promise.resolve({ open: false, detail: 'no gateway port' })
 
   // 2 + 3 read the catalog after background discovery has replaced the cached list.
   const discovery = await waitForDiscovery()
@@ -316,6 +324,18 @@ async function main(): Promise<void> {
   for (const c of completions) report(c.id, c.ok, c.title, c.evidence)
   const held = await idle
   report('5', held.open, 'gateway idle', `127.0.0.1:${port ?? '?'} ${held.detail}`)
+
+  // 8. Callers without the process key, or with another Host, are refused.
+  if (port) {
+    const noKey = await statusLine(port, `127.0.0.1:${port}`)
+    const badHost = await statusLine(port, `evil.example:${port}`)
+    report(
+      '8',
+      / 401 /.test(noKey) && / 403 /.test(badHost),
+      'gateway refuses',
+      `no key -> ${noKey || 'no answer'}; wrong Host -> ${badHost || 'no answer'}`
+    )
+  } else report('8', false, 'gateway refuses', 'no gateway port')
 
   // 7 runs last: the rotation closes the old listener, so the idle hold must be over.
   await rotation(bin, env, port, wire)
@@ -647,8 +667,13 @@ function shape(v: Variant): string {
   return `{settings: ${keys(v.settings)}, body: ${keys(v.body)}}`
 }
 
-/** 5. Announce a body that never arrives and watch whether the gateway hangs up. */
-function idleHold(port: number): Promise<{ open: boolean; detail: string }> {
+/**
+ * 5. Send a complete, authorized request whose body never arrives: the handler
+ * waits, so only the listener's idle timeout can end the connection. (Headers
+ * that never complete hit Bun's separate header timeout even with
+ * idleTimeout 0, so they cannot tell a fixed listener from a broken one.)
+ */
+function idleHold(port: number, key: string | undefined): Promise<{ open: boolean; detail: string }> {
   return new Promise((done) => {
     const opened = Date.now()
     let closed: string | undefined
@@ -660,7 +685,8 @@ function idleHold(port: number): Promise<{ open: boolean; detail: string }> {
     }
     socket.on('connect', () =>
       socket.write(
-        'POST /chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n' +
+        `POST /chat/completions HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n` +
+          (key ? `${GATEWAY_KEY_HEADER}: ${key}\r\n` : '') +
           'Content-Type: application/json\r\nContent-Length: 64\r\n\r\n'
       )
     )
@@ -679,6 +705,44 @@ function idleHold(port: number): Promise<{ open: boolean; detail: string }> {
         detail: `${open ? `still open after ${secs(IDLE_HOLD_MS)}` : closed} (${received} bytes received)`
       })
     }, IDLE_HOLD_MS)
+  })
+}
+
+/**
+ * The per-process gateway key the catalog stamps on kiro models (never printed).
+ * Undefined for plugin builds before the key existed; their gateway accepts any caller.
+ */
+async function gatewayKeyFromCatalog(): Promise<string | undefined> {
+  const deadline = Date.now() + 10_000
+  while (Date.now() < deadline) {
+    const key = (await kiroModels()).map((m) => m.headers?.[GATEWAY_KEY_HEADER]).find(Boolean)
+    if (typeof key === 'string') return key
+    await Bun.sleep(250)
+  }
+  return undefined
+}
+
+/** Status line of an unauthenticated POST to the gateway with the given Host. */
+function statusLine(port: number, host: string): Promise<string> {
+  return new Promise((done) => {
+    let buf = ''
+    const socket = connect({ host: '127.0.0.1', port })
+    live.sockets.add(socket)
+    const finish = () => {
+      socket.destroy()
+      live.sockets.delete(socket)
+      done(buf.split('\r\n')[0] ?? '')
+    }
+    socket.on('connect', () =>
+      socket.write(
+        `POST /chat/completions HTTP/1.1\r\nHost: ${host}\r\nContent-Type: application/json\r\n` +
+          'Content-Length: 2\r\nConnection: close\r\n\r\n{}'
+      )
+    )
+    socket.on('data', (chunk) => (buf += chunk))
+    socket.on('close', finish)
+    socket.on('error', finish)
+    setTimeout(finish, 5_000)
   })
 }
 
