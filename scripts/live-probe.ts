@@ -43,6 +43,7 @@ import {
   closeSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -128,7 +129,12 @@ interface LogEntry {
 
 const started = Date.now()
 const pluginDir = parseArgs(process.argv.slice(2))
-const runDir = `/tmp/opencode/live-probe-${new Date(started).toISOString().replace(/[:.]/g, '-')}`
+// mkdtemp: two probes started in the same millisecond must not share a run dir
+// (shared config/data dirs, and each run's cleanup would kill the other's server).
+mkdirSync('/tmp/opencode', { recursive: true })
+const runDir = mkdtempSync(
+  `/tmp/opencode/live-probe-${new Date(started).toISOString().replace(/[:.]/g, '-')}-`
+)
 const workDir = join(runDir, 'work')
 const password = randomBytes(32).toString('base64url')
 // Other Kiro processes may write API logs into the same directory meanwhile;
