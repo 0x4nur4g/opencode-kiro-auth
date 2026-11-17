@@ -15,7 +15,19 @@
  *   3 variant levels match the effort schema in kiro-models.json
  *   4 real completions carry the effort on the wire (plugin request log)
  *   5 the gateway keeps an idle connection open past Bun's 10 s default
+ *   7 a forced gateway rotation: the old listener stops, a new one starts on
+ *     another port, the catalog heals a stale record to it, and a completion
+ *     works afterwards
  *   6 no ERROR or lock-contention lines from the server's pid in plugin.log
+ *     (evaluated last, after shutdown)
+ *
+ * Check 7 rewrites the probe's own config to insert a fixture plugin before
+ * kiro. The host keeps only the unchanged prefix of the plugin list, so kiro's
+ * setup re-runs (teardown first: the gateway rotates), and the fixture adds a
+ * stale plugin-owned `kiro` record (http://127.0.0.1:0) ahead of kiro's
+ * transform. Host v2.3.0 rebuilds every catalog from an empty draft, so a plain
+ * reload (POST /api/location/reload) only reaches the transform's add branch;
+ * the fixture is what makes the heal branch produce the new port.
  *
  * Needs a logged-in Kiro account and Linux (/proc). Isolation:
  * OPENCODE_CONFIG_DIR and XDG_DATA/STATE/CACHE_HOME live under
@@ -54,7 +66,32 @@ const COMPLETIONS = [
   { id: '4a', model: 'claude-haiku-5-5', variant: 'high' },
   { id: '4b', model: 'gpt-5.6-luna', variant: 'low' }
 ]
+const AFTER_ROTATION = { id: '7d', model: 'claude-haiku-5-5', variant: 'high' }
 const IDLE_HOLD_MS = 13_000
+/** The poisoned provider URL of the original heal bug. */
+const STALE_URL = 'http://127.0.0.1:0'
+/** Fixture plugin for check 7: a stale plugin-owned kiro record ahead of kiro's transform. */
+const STALE_FIXTURE = `// live-probe fixture: a stale plugin-owned kiro provider record.
+export default {
+  id: 'live-probe-stale-kiro',
+  async setup(ctx) {
+    const registration = await ctx.provider.transform((draft) => {
+      if (draft.get('kiro')) return
+      draft.add({
+        info: {
+          id: 'kiro',
+          name: 'Kiro',
+          activation: 'enabled',
+          package: '@opencode/ai/providers/openai-compatible',
+          settings: { baseURL: '${STALE_URL}' }
+        },
+        models: []
+      })
+    })
+    return () => registration.dispose()
+  }
+}
+`
 /** Plugin API log name: optional error_ prefix, request timestamp, kind. */
 const API_LOG = /^(?:error_)?(\d{4}-\d{2}-\d{2}T[\d-]+Z)_(?:request|response)\.json$/
 
@@ -105,6 +142,7 @@ const results: Array<{ id: string; ok: boolean }> = []
 const live: {
   server?: Subprocess<'pipe', 'pipe', number>
   url?: string
+  apiPort?: number
   pids: Set<number>
   ports: Set<number>
   children: Set<Subprocess>
@@ -151,10 +189,7 @@ async function main(): Promise<void> {
   for (const dir of ['config', 'data', 'state', 'cache', 'work']) {
     mkdirSync(join(runDir, dir), { recursive: true })
   }
-  writeFileSync(
-    join(runDir, 'config', 'opencode.json'),
-    JSON.stringify({ plugins: [{ package: pluginDir }] }, null, 2)
-  )
+  writePlugins([pluginDir])
   const env = childEnv()
   await startServer(bin, env)
   const info = (await api('/api/info')).body as { version?: string; pid?: number } | null
@@ -208,15 +243,16 @@ async function main(): Promise<void> {
 
   // 2. Provider record, listener, and variant transport.
   const catalogPort = gatewayPort(baseURL)
-  const inodes = catalogPort ? listenInodes(catalogPort) : []
-  const owned = inodes.length > 0 && [...live.pids].some((pid) => ownsSocket(pid, inodes))
+  const own = serverSockets()
+  const listening = listeners().filter((l) => l.port === catalogPort)
+  const owned = listening.some((l) => own.has(l.inode))
   const rowsElsewhere = models.filter(
     (m) => m.settings?.baseURL !== undefined && m.settings.baseURL !== baseURL
   )
   const variants = models.flatMap((m) => (m.variants ?? []).map((v) => ({ model: m.id, v })))
   const noBody = variants.filter(({ v }) => typeof thinkingBudget(v.body) !== 'number')
   if (catalogPort) live.ports.add(catalogPort)
-  const listener = !inodes.length ? 'NOT listening' : owned ? 'listening' : 'listening, NOT ours'
+  const listener = !listening.length ? 'NOT listening' : owned ? 'listening' : 'listening, NOT ours'
   report(
     '2',
     catalogPort !== undefined &&
@@ -274,14 +310,121 @@ async function main(): Promise<void> {
   for (const c of completions) report(c.id, c.ok, c.title, c.evidence)
   const held = await idle
   report('5', held.open, 'gateway idle', `127.0.0.1:${port ?? '?'} ${held.detail}`)
+
+  // 7 runs last: the rotation closes the old listener, so the idle hold must be over.
+  await rotation(bin, env, port, wire)
 }
 
-/** 4. Run one completion and find its request log with the expected effort. */
+/** 7. Force a gateway rotation whose catalog fold must heal a stale record. */
+async function rotation(
+  bin: string,
+  env: Record<string, string>,
+  oldPort: number | undefined,
+  wire: WireModel[]
+): Promise<void> {
+  const fixture = join(runDir, 'stale-kiro')
+  mkdirSync(fixture, { recursive: true })
+  writeFileSync(join(fixture, 'index.ts'), STALE_FIXTURE)
+  writeFileSync(join(fixture, 'package.json'), '{"name":"live-probe-stale-kiro","type":"module"}')
+  const seen = new Set(probeRequestLogs().map((l) => l.file))
+  const before = ourLogEntries().length
+  const began = Date.now()
+  writePlugins([fixture, pluginDir])
+
+  // 7a. The old listener stops and a new one is created on another port.
+  let lines: string[] = []
+  let newPort: number | undefined
+  while (Date.now() - began < 30_000 && newPort === undefined) {
+    await Bun.sleep(250)
+    lines = ourLogEntries()
+      .slice(before)
+      .map((e) => e.text.replace(/^.*?(INFO|WARN|ERROR): /, '').trim())
+    newPort = lines
+      .map((line) => gatewayPort(/^Kiro gateway created at (\S+)/.exec(line)?.[1]))
+      .find((p) => p !== undefined && p !== oldPort)
+  }
+  if (newPort) live.ports.add(newPort)
+  const stopped = lines.some(
+    (line) =>
+      line === `Kiro gateway stopped at http://127.0.0.1:${oldPort}` ||
+      line.startsWith('Kiro gateway from older plugin code replaced')
+  )
+  report(
+    '7a',
+    stopped && newPort !== undefined,
+    'rotation',
+    `config now loads [fixture, kiro]; plugin.log from server pid within ${secs(Date.now() - began)}: ` +
+      (lines.filter((line) => line.startsWith('Kiro gateway')).join(' | ') || 'no gateway lines')
+  )
+
+  // 7b. The provider record and every kiro row follow the new port. The
+  // fixture's stale record sits ahead of kiro's transform, so only the heal
+  // branch can produce this.
+  const target = newPort ? `http://127.0.0.1:${newPort}` : undefined
+  const onTarget = (models: Model[]) => models.filter((m) => m.settings?.baseURL === target)
+  let snapshot = { baseURL: undefined as unknown, models: [] as Model[] }
+  const settleBy = Date.now() + 10_000
+  while (Date.now() < settleBy) {
+    snapshot = { baseURL: await providerBaseURL(), models: await kiroModels() }
+    const { baseURL, models } = snapshot
+    if (target && baseURL === target && models.length && onTarget(models).length === models.length)
+      break
+    await Bun.sleep(250)
+  }
+  const plugins = await waitForPlugin()
+  const order = plugins.map((p) => (samePath(p.source?.path, fixture) ? 'fixture' : p.id))
+  const fixtureFirst = order.includes('fixture') && order.indexOf('fixture') < order.indexOf('kiro')
+  const fixtureActive = plugins.some(
+    (p) => samePath(p.source?.path, fixture) && p.state?.status === 'active'
+  )
+  const kiroState = plugins.find((p) => p.id === 'kiro')?.state?.status ?? 'missing'
+  const rows = snapshot.models
+  report(
+    '7b',
+    fixtureActive &&
+      fixtureFirst &&
+      target !== undefined &&
+      snapshot.baseURL === target &&
+      rows.length > 0 &&
+      onTarget(rows).length === rows.length,
+    'rotation heal',
+    [
+      `stale fixture record ${STALE_URL} ${fixtureActive && fixtureFirst ? 'active ahead of kiro' : 'NOT ahead of kiro'} (kiro ${kiroState})`,
+      `provider baseURL now ${String(snapshot.baseURL)} (expected ${target ?? 'a new port'})`,
+      `${onTarget(rows).length}/${rows.length} kiro rows on it`
+    ].join('; ')
+  )
+
+  // 7c. Exactly one gateway listener is left in the server, and the old port is closed.
+  const own = serverSockets()
+  const gateways = listeners()
+    .filter((l) => own.has(l.inode) && l.port !== live.apiPort)
+    .map((l) => l.port)
+  const oldOpen = oldPort !== undefined && listeners().some((l) => l.port === oldPort)
+  report(
+    '7c',
+    gateways.length === 1 && gateways[0] === newPort && !oldOpen,
+    'rotation listeners',
+    `server pid listens on ${gateways.join(', ') || 'no'} gateway port(s) besides API port ` +
+      `${live.apiPort}; old port ${oldPort ?? '?'} ${oldOpen ? 'STILL LISTENING' : 'closed'}`
+  )
+
+  // 7d. A completion still works after the rotation.
+  if (!newPort) {
+    report('7d', false, 'completion after rotation', 'skipped: no rotation happened')
+    return
+  }
+  const after = await completion(bin, env, AFTER_ROTATION, wire, seen)
+  report(after.id, after.ok, `${after.title} after rotation`, after.evidence)
+}
+
+/** 4. Run one completion and find its new request log with the expected effort. */
 async function completion(
   bin: string,
   env: Record<string, string>,
   spec: { id: string; model: string; variant: string },
-  wire: WireModel[]
+  wire: WireModel[],
+  seen = new Set<string>()
 ): Promise<{ id: string; ok: boolean; title: string; evidence: string }> {
   const title = `completion kiro/${spec.model}#${spec.variant}`
   const w = wire.find((m) => toOpenCodeId(m.modelId) === spec.model)
@@ -310,7 +453,7 @@ async function completion(
   clearTimeout(timer)
   live.children.delete(proc)
   const reply = stripAnsi(out).trim()
-  const logs = probeRequestLogs().filter((l) => l.model === w.modelId)
+  const logs = probeRequestLogs().filter((l) => !seen.has(l.file) && l.model === w.modelId)
   const hit = logs.find((l) => l.fields === expected)
   const ok = code === 0 && /\bOK\b/.test(reply) && hit !== undefined
   const tail = stripAnsi(err).trim().split('\n').slice(-3).join(' | ')
@@ -362,8 +505,14 @@ async function startServer(bin: string, env: Record<string, string>): Promise<vo
   const url = (JSON.parse(line) as { url?: unknown }).url
   if (typeof url !== 'string') throw new Error(`unexpected ready line: ${line.slice(0, 200)}`)
   live.url = url
-  const port = gatewayPort(url)
-  if (port) live.ports.add(port)
+  live.apiPort = gatewayPort(url)
+  if (live.apiPort) live.ports.add(live.apiPort)
+}
+
+/** The private server's only config: these plugin dirs, in this order. */
+function writePlugins(dirs: string[]): void {
+  const plugins = dirs.map((dir) => ({ package: dir }))
+  writeFileSync(join(runDir, 'config', 'opencode.json'), JSON.stringify({ plugins }, null, 2))
 }
 
 async function api(path: string): Promise<{ status: number; body: unknown }> {
@@ -628,7 +777,7 @@ async function cleanup(): Promise<string[]> {
   for (const pid of strays()) {
     if (killOurs(pid, 'SIGKILL')) notes.push(`killed stray pid ${pid}`)
   }
-  const busy = [...live.ports].filter((port) => listenInodes(port).length > 0)
+  const busy = [...live.ports].filter((port) => listeners().some((l) => l.port === port))
   if (busy.length) report('cleanup', false, 'ports', `still listening: ${busy.join(', ')}`)
   else notes.push(`ports ${[...live.ports].join(', ') || 'none'} free`)
   // Delete only the logs of requests this probe caused: the request carries the
@@ -673,9 +822,9 @@ function strays(): number[] {
     .filter((pid) => pid !== process.pid && belongsToRun(pid))
 }
 
-/** Inodes of LISTEN sockets on a local TCP port (/proc/net/tcp{,6}). */
-function listenInodes(port: number): string[] {
-  const inodes: string[] = []
+/** LISTEN sockets on this host: local TCP port and socket inode (/proc/net/tcp{,6}). */
+function listeners(): Array<{ port: number; inode: string }> {
+  const rows: Array<{ port: number; inode: string }> = []
   for (const table of ['/proc/net/tcp', '/proc/net/tcp6']) {
     for (const line of attempt(() => readFileSync(table, 'utf8'), '')
       .split('\n')
@@ -683,17 +832,22 @@ function listenInodes(port: number): string[] {
       const cols = line.trim().split(/\s+/)
       const local = cols[1]
       if (!local || cols[3] !== '0A' || !cols[9]) continue
-      if (parseInt(local.split(':').pop() ?? '', 16) === port) inodes.push(cols[9])
+      rows.push({ port: parseInt(local.split(':').pop() ?? '', 16), inode: cols[9] })
+    }
+  }
+  return rows
+}
+
+/** Socket inodes held open by the server process. */
+function serverSockets(): Set<string> {
+  const inodes = new Set<string>()
+  for (const pid of live.pids) {
+    for (const fd of listDir(`/proc/${pid}/fd`)) {
+      const link = attempt(() => readlinkSync(`/proc/${pid}/fd/${fd}`), '')
+      if (link.startsWith('socket:[')) inodes.add(link.slice('socket:['.length, -1))
     }
   }
   return inodes
-}
-
-function ownsSocket(pid: number, inodes: string[]): boolean {
-  return listDir(`/proc/${pid}/fd`).some((fd) => {
-    const link = attempt(() => readlinkSync(`/proc/${pid}/fd/${fd}`), '')
-    return inodes.some((inode) => link === `socket:[${inode}]`)
-  })
 }
 
 function gatewayPort(url: unknown): number | undefined {

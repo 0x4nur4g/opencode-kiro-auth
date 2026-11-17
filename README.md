@@ -267,7 +267,8 @@ bun scripts/live-probe.ts   # live host checks before a ship
 this checkout (`--plugin-dir <abs path>` for another one) and checks what unit tests
 cannot: plugin activation, the provider's gateway URL, effort variants as request-body
 overlays matching Kiro's schema, effort on the wire in real completions, the gateway
-idle timeout, and `plugin.log` errors. It needs a logged-in Kiro account and exits
+idle timeout, a forced gateway rotation (the catalog must heal a stale provider record
+to the new port), and `plugin.log` errors. It needs a logged-in Kiro account and exits
 non-zero on any FAIL.
 
 ## Limitations
