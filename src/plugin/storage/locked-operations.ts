@@ -49,7 +49,10 @@ async function withFileLock<T>(dbPath: string, fn: () => Promise<T>): Promise<T>
   if (!existsSync(dbPath)) {
     const dir = dbPath.substring(0, dbPath.lastIndexOf('/'))
     await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(dbPath, '', { mode: 0o600 })
+    // 'wx': if another instance created the DB during the await, keep it — 'w' would empty it.
+    await fs.writeFile(dbPath, '', { mode: 0o600, flag: 'wx' }).catch((e) => {
+      if (e?.code !== 'EEXIST') throw e
+    })
   }
 
   let release: (() => Promise<void>) | null = null
