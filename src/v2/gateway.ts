@@ -3,6 +3,14 @@ import type { RequestHandler } from '../core/request/request-handler.js'
 export type NotifyFn = (message: string, variant: 'info' | 'success' | 'warn' | 'error') => void
 
 /**
+ * Revision of the listener's server options. A shared listener outlives module
+ * re-evaluation with the options of the code that created it, so setup
+ * replaces one whose revision differs. Bump on any `Bun.serve` option change.
+ * 2: idleTimeout 0.
+ */
+export const GATEWAY_REVISION = 2
+
+/**
  * Loopback OpenAI-compatible endpoint fronting the Kiro request pipeline.
  *
  * OpenCode's provider calls `settings.baseURL + /chat/completions` with its own
@@ -11,6 +19,8 @@ export type NotifyFn = (message: string, variant: 'info' | 'success' | 'warn' | 
  * upstream URL-pattern gate and model extraction keep working unchanged.
  */
 export class KiroGateway {
+  /** Server-options revision this listener was built with. */
+  readonly revision = GATEWAY_REVISION
   private server: ReturnType<typeof Bun.serve> | undefined
   private port = 0
   private region: string

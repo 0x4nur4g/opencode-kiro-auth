@@ -15,7 +15,13 @@ import { KIRO_AUTH_METHOD_IDS, registerKiroAuth } from './auth.js'
 import { buildV2ModelRegistry, registerKiroCatalog } from './catalog.js'
 import { validateHostSurfaces } from './context.js'
 import { discoverAccountModels } from './discovery.js'
-import { getSharedGateway, KiroGateway, setSharedGateway, type NotifyFn } from './gateway.js'
+import {
+  GATEWAY_REVISION,
+  getSharedGateway,
+  KiroGateway,
+  setSharedGateway,
+  type NotifyFn
+} from './gateway.js'
 import type { PluginContext, PluginDefinition, Registration } from './host-types.js'
 import { registerKiroTools } from './tools.js'
 
@@ -92,8 +98,17 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
 
   const requestHandler = new RequestHandler(accountManager, config, repository, reauth)
 
-  const existing = getSharedGateway()
   const region = config.default_region || 'us-east-1'
+  let existing = getSharedGateway()
+  if (existing && existing.revision !== GATEWAY_REVISION) {
+    // Built by older plugin code, so it keeps that code's server options.
+    // Claim it first so the old run's teardown cannot clear the anchor.
+    existing.claim(requestHandler, notify, region)
+    existing.stop()
+    setSharedGateway(undefined)
+    notify('Kiro gateway from older plugin code replaced', 'info')
+    existing = undefined
+  }
   const gateway = existing ?? new KiroGateway(requestHandler, notify, region)
   if (!existing) {
     await gateway.start()
