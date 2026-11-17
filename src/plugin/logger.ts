@@ -55,7 +55,7 @@ const writeApiLog = (
     const filename = `${prefix}${timestamp}_${type}.json`
     const path = join(dir, filename)
     const content = JSON.stringify(data, binaryToBase64Replacer, 2)
-    writeFileSync(path, content)
+    writeFileSync(path, content, { mode: 0o600 })
   } catch (e) {}
 }
 

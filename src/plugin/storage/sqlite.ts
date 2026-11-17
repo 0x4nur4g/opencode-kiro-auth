@@ -1,6 +1,6 @@
 import type Libsql from 'libsql'
 import Database from 'libsql'
-import { existsSync, mkdirSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { ManagedAccount } from '../types'
@@ -16,6 +16,24 @@ function getBaseDir(): string {
 
 export const DB_PATH = join(getBaseDir(), 'kiro.db')
 
+/**
+ * kiro.db holds access tokens, refresh tokens and client secrets, so it and its WAL
+ * side files stay owner-only. SQLite gives a new -wal/-shm the main file's mode but
+ * keeps the mode of existing ones. 'wx' only ever creates: closing an extra fd on an
+ * open database drops this process's SQLite locks on it. Best-effort: some platforms
+ * and filesystems refuse chmod.
+ */
+function restrictToOwner(path: string): void {
+  try {
+    closeSync(openSync(path, 'wx', 0o600))
+  } catch {}
+  for (const file of [path, `${path}-wal`, `${path}-shm`]) {
+    try {
+      chmodSync(file, 0o600)
+    } catch {}
+  }
+}
+
 export class KiroDatabase {
   private db: Libsql.Database
   private path: string
@@ -24,6 +42,7 @@ export class KiroDatabase {
     this.path = path
     const dir = join(path, '..')
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    restrictToOwner(path)
     this.db = new Database(path)
     this.db.pragma('busy_timeout = 5000')
     this.init()
