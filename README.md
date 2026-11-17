@@ -260,7 +260,15 @@ bun install
 bun run typecheck   # tsc --noEmit
 bun test            # unit tests
 bun run format      # prettier
+bun scripts/live-probe.ts   # live host checks before a ship
 ```
+
+`scripts/live-probe.ts` starts a private, isolated `opencode serve` that loads only
+this checkout (`--plugin-dir <abs path>` for another one) and checks what unit tests
+cannot: plugin activation, the provider's gateway URL, effort variants as request-body
+overlays matching Kiro's schema, effort on the wire in real completions, the gateway
+idle timeout, and `plugin.log` errors. It needs a logged-in Kiro account and exits
+non-zero on any FAIL.
 
 ## Limitations
 
