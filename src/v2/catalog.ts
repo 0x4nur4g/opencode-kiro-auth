@@ -78,7 +78,7 @@ export function registerKiroCatalog(
  * Map the V1 model registry onto V2 ModelInfoDraft entries.
  *
  * V1 entries are `Record<string, unknown>` at the type level, so every field is
- * read defensively; anything non-JSON in the variant settings is stripped by a
+ * read defensively; anything non-JSON in a variant body is stripped by a
  * JSON round-trip. `settings.apiKey` is a non-secret placeholder required by the
  * openai-compatible factory — never a credential.
  */
@@ -145,12 +145,19 @@ function stringOf(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
-function toVariants(value: unknown): Array<{ id: string; settings?: Record<string, unknown> }> {
+/**
+ * Variant options travel as a request-body overlay: the host merges a selected
+ * variant's `body` into the JSON it sends the gateway, where the request
+ * handler reads `thinkingConfig`. Variant `settings` would only reach the AI
+ * SDK provider factory, which drops unknown keys (host v2.3.0
+ * `aisdk.ts` prepareOptions), so the effort never arrived.
+ */
+function toVariants(value: unknown): Array<{ id: string; body?: Record<string, unknown> }> {
   if (typeof value !== 'object' || value === null) return []
 
-  const variants: Array<{ id: string; settings?: Record<string, unknown> }> = []
-  for (const [id, settings] of Object.entries(value)) {
-    variants.push({ id, settings: stripToJson(settings) })
+  const variants: Array<{ id: string; body?: Record<string, unknown> }> = []
+  for (const [id, overlay] of Object.entries(value)) {
+    variants.push({ id, body: stripToJson(overlay) })
   }
   return variants
 }

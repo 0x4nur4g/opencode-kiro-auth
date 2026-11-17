@@ -101,7 +101,11 @@ export interface ModelInfoDraft {
   enabled?: boolean
   capabilities?: { tools: boolean; input: string[]; output: string[] }
   limit?: { context: number; output: number; input?: number }
-  variants?: Array<{ id: string; settings?: Record<string, unknown> }>
+  variants?: Array<{
+    id: string
+    settings?: Record<string, unknown>
+    body?: Record<string, unknown>
+  }>
   time?: { released: number }
   cost?: Array<Record<string, unknown>>
   settings?: Record<string, unknown>
