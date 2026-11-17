@@ -15,7 +15,35 @@ const LOCK_OPTIONS = {
   realpath: false
 }
 
+/**
+ * One write queue per process. The host runs several plugin instances in one
+ * process (one per location, plus re-setups after reloads); without the queue
+ * their startup writes all poll the same file lock at once, and the slow ones
+ * give up with "Lock file is already being held". The file lock still guards
+ * against other processes. Anchored on the process global so re-evaluated
+ * module instances share it.
+ */
+const WRITE_QUEUE_KEY = Symbol.for('kiro-auth-v2.dbWriteQueue')
+
+function writeQueue(): { tail: Promise<void> } {
+  const anchor = globalThis as unknown as Record<symbol, { tail: Promise<void> } | undefined>
+  return (anchor[WRITE_QUEUE_KEY] ??= { tail: Promise.resolve() })
+}
+
 export async function withDatabaseLock<T>(dbPath: string, fn: () => Promise<T>): Promise<T> {
+  const queue = writeQueue()
+  const previous = queue.tail
+  let done!: () => void
+  queue.tail = new Promise<void>((resolve) => (done = resolve))
+  await previous
+  try {
+    return await withFileLock(dbPath, fn)
+  } finally {
+    done()
+  }
+}
+
+async function withFileLock<T>(dbPath: string, fn: () => Promise<T>): Promise<T> {
   const lockPath = `${dbPath}.lock`
 
   if (!existsSync(dbPath)) {

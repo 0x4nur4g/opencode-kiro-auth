@@ -31,16 +31,26 @@ export class TokenRefresher {
       return { account, shouldContinue: false }
     }
 
+    let newAuth: KiroAuthDetails
     try {
-      const newAuth = await refreshAccessToken(auth)
-      this.accountManager.updateFromAuth(account, newAuth)
-      // Persist only the updated account instead of all accounts — avoids
-      // invalidating the whole AccountCache on every token refresh.
-      await this.repository.save(account)
-      return { account, shouldContinue: false }
+      newAuth = await refreshAccessToken(auth)
     } catch (e: any) {
       return await this.handleRefreshError(e, account, showToast)
     }
+    this.accountManager.updateFromAuth(account, newAuth)
+    // Persist only the updated account instead of all accounts — avoids
+    // invalidating the whole AccountCache on every token refresh. A failed
+    // write must not turn a successful refresh into a failure (that path
+    // re-reads the stale stored token): keep using the new token in memory.
+    try {
+      await this.repository.save(account)
+    } catch (e) {
+      logger.warn('Token refreshed but not saved; using it in memory', {
+        email: account.email,
+        error: e instanceof Error ? e.message : String(e)
+      })
+    }
+    return { account, shouldContinue: false }
   }
 
   async forceRefresh(account: ManagedAccount, auth: KiroAuthDetails): Promise<void> {
