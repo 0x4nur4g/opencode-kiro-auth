@@ -18,6 +18,9 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned so a new Bun release cannot turn CI red on its own; bump on purpose.
+          bun-version: 1.4.4
 
       - run: bun install --frozen-lockfile
 
