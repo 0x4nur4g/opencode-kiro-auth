@@ -72,7 +72,7 @@ shape. A local checkout:
 }
 ```
 
-A published git spec (once the fork has a repository):
+A published git spec (this fork is `github:0x4nur4g/opencode-kiro-auth`):
 
 ```json
 {
